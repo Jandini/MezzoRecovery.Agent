@@ -41,8 +41,8 @@
 			<PrivateAssets>all</PrivateAssets>
 			<IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
 		</PackageReference>
-		<PackageReference Include="MezzoRecovery.TapeDrive" Version="0.1.1-main.4" Condition=" '$(UseProjectReference)' != 'true' or !Exists($(MezzoRecoveryTapeDriveProject)) " />
-		<PackageReference Include="MezzoRecovery.TapeImage" Version="0.1.1-main.3" Condition=" '$(UseProjectReference)' != 'true' or !Exists($(MezzoRecoveryTapeImageProject)) " />
-		<PackageReference Include="MezzoRecovery.Tape" Version="0.1.0-main.3" Condition=" '$(UseProjectReference)' != 'true' or !Exists($(MezzoRecoveryTapeProject)) " />
+		<PackageReference Include="MezzoRecovery.TapeDrive" Version="0.1.1-ux.5" Condition=" '$(UseProjectReference)' != 'true' or !Exists($(MezzoRecoveryTapeDriveProject)) " />
+		<PackageReference Include="MezzoRecovery.TapeImage" Version="0.1.1-ux.3" Condition=" '$(UseProjectReference)' != 'true' or !Exists($(MezzoRecoveryTapeImageProject)) " />
+		<PackageReference Include="MezzoRecovery.Tape" Version="0.1.0-ux.5" Condition=" '$(UseProjectReference)' != 'true' or !Exists($(MezzoRecoveryTapeProject)) " />
 	</ItemGroup>
 </Project>

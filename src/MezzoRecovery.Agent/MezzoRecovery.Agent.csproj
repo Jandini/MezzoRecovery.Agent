@@ -19,13 +19,30 @@
 		<RepositoryUrl>https://github.com/Jandini/MezzoRecovery.Agent</RepositoryUrl>
 		<PackageProjectUrl>https://github.com/Jandini/MezzoRecovery.Agent</PackageProjectUrl>
 	</PropertyGroup>
+	<PropertyGroup>
+		<OwnSolutionName>MezzoRecovery.Agent</OwnSolutionName>
+		<UseProjectReference Condition=" '$(SolutionName)' != '' and '$(SolutionName)' != '$(OwnSolutionName)' ">true</UseProjectReference>
+	</PropertyGroup>
+	<PropertyGroup>
+		<MezzoRecoveryTapeProject>../../../MezzoRecovery.Tape/src/MezzoRecovery.Tape/MezzoRecovery.Tape.csproj</MezzoRecoveryTapeProject>
+		<MezzoRecoveryTapeDriveProject>../../../MezzoRecovery.TapeDrive/src/MezzoRecovery.TapeDrive/MezzoRecovery.TapeDrive.csproj</MezzoRecoveryTapeDriveProject>
+		<MezzoRecoveryTapeImageProject>../../../MezzoRecovery.TapeImage/src/MezzoRecovery.TapeImage/MezzoRecovery.TapeImage.csproj</MezzoRecoveryTapeImageProject>
+	</PropertyGroup>
 	<ItemGroup>
 		<None Include="..\..\README.md" Pack="true" PackagePath="\" />
+	</ItemGroup>
+	<ItemGroup Condition=" '$(UseProjectReference)' == 'true' ">
+		<ProjectReference Include="$(MezzoRecoveryTapeProject)" Condition="Exists($(MezzoRecoveryTapeProject))" />
+		<ProjectReference Include="$(MezzoRecoveryTapeDriveProject)" Condition="Exists($(MezzoRecoveryTapeDriveProject))" />
+		<ProjectReference Include="$(MezzoRecoveryTapeImageProject)" Condition="Exists($(MezzoRecoveryTapeImageProject))" />
 	</ItemGroup>
 	<ItemGroup>
 		<PackageReference Include="GitVersion.MsBuild" Version="5.12.0">
 			<PrivateAssets>all</PrivateAssets>
 			<IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
 		</PackageReference>
+		<PackageReference Include="MezzoRecovery.TapeDrive" Version="0.1.1-main.4" Condition=" '$(UseProjectReference)' != 'true' or !Exists($(MezzoRecoveryTapeDriveProject)) " />
+		<PackageReference Include="MezzoRecovery.TapeImage" Version="0.1.1-main.3" Condition=" '$(UseProjectReference)' != 'true' or !Exists($(MezzoRecoveryTapeImageProject)) " />
+		<PackageReference Include="MezzoRecovery.Tape" Version="0.1.0-main.3" Condition=" '$(UseProjectReference)' != 'true' or !Exists($(MezzoRecoveryTapeProject)) " />
 	</ItemGroup>
 </Project>

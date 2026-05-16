@@ -23,7 +23,7 @@ public sealed class AgentConnectionLoop(string configPath, string credentialPath
         var cred = await CredentialStore.TryLoadAsync(credentialPath, ct);
         if (cred is null)
         {
-            _logger.LogError("No credentials at {Path}. Run enroll first.", credentialPath);
+            _logger.LogError("No credentials at {Path}. Run 'mra enroll' first.", credentialPath);
             return;
         }
 
@@ -34,6 +34,7 @@ public sealed class AgentConnectionLoop(string configPath, string credentialPath
         var hostname = Environment.MachineName;
         var os = System.Runtime.InteropServices.RuntimeInformation.OSDescription;
         var arch = System.Runtime.InteropServices.RuntimeInformation.OSArchitecture.ToString();
+        var hubUri = new Uri(baseUri, "api/hubs/agent");
 
         var failureBackoff = TimeSpan.FromSeconds(2);
         const int maxFailureBackoffSeconds = 120;
@@ -43,31 +44,27 @@ public sealed class AgentConnectionLoop(string configPath, string credentialPath
             HubConnection? hub = null;
             try
             {
-                var tokenResp = await api.GetTokenAsync(
-                    baseUri,
-                    new TokenApiRequest(cred.AgentId, cred.ClientSecret),
-                    ct);
-                if (tokenResp is null)
-                {
-                    _logger.LogWarning("Token request failed; retrying after {Delay}.", failureBackoff);
-                    await Task.Delay(failureBackoff, ct);
-                    failureBackoff = TimeSpan.FromSeconds(Math.Min(maxFailureBackoffSeconds, failureBackoff.TotalSeconds * 2));
-                    continue;
-                }
-
-                failureBackoff = TimeSpan.FromSeconds(2);
-                var hubUri = new Uri(baseUri, "api/hubs/agent");
-                var hubUrl = $"{hubUri}?access_token={Uri.EscapeDataString(tokenResp.AccessToken)}";
                 hub = new HubConnectionBuilder()
-                    .WithUrl(hubUrl)
+                    .WithUrl(hubUri, opts =>
+                    {
+                        opts.AccessTokenProvider = async () =>
+                        {
+                            var tokenResp = await api.GetTokenAsync(
+                                baseUri,
+                                new TokenApiRequest(cred.AgentId, cred.ClientSecret),
+                                CancellationToken.None);
+                            return tokenResp?.AccessToken;
+                        };
+                    })
                     .WithAutomaticReconnect(
-                        Enumerable.Range(0, 8).Select(n => TimeSpan.FromSeconds(Math.Min(60, Math.Pow(2, n))))
+                        Enumerable.Range(0, 8)
+                            .Select(n => TimeSpan.FromSeconds(Math.Min(60, Math.Pow(2, n))))
                             .ToArray())
                     .Build();
 
                 hub.Reconnecting += error =>
                 {
-                    _logger.LogWarning(error, "SignalR reconnecting…");
+                    _logger.LogWarning(error, "SignalR reconnecting...");
                     return Task.CompletedTask;
                 };
                 hub.Reconnected += async connectionId =>
@@ -75,7 +72,7 @@ public sealed class AgentConnectionLoop(string configPath, string credentialPath
                     _logger.LogInformation("SignalR reconnected. ConnectionId={Id}", connectionId);
                     try
                     {
-                        await hub!.InvokeAsync("RegisterRuntime", hostname, os, arch, version, ct);
+                        await hub!.InvokeAsync("RegisterRuntime", hostname, os, arch, version, CancellationToken.None);
                     }
                     catch (Exception ex)
                     {
@@ -84,13 +81,14 @@ public sealed class AgentConnectionLoop(string configPath, string credentialPath
                 };
 
                 var disconnectTcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-                hub.Closed += async _ =>
+                hub.Closed += _ =>
                 {
                     disconnectTcs.TrySetResult();
-                    await Task.CompletedTask;
+                    return Task.CompletedTask;
                 };
 
                 await hub.StartAsync(ct);
+                failureBackoff = TimeSpan.FromSeconds(2);
                 _logger.LogInformation("Connected to MezzoRecovery (agent {AgentId}).", cred.AgentId);
                 await hub.InvokeAsync("RegisterRuntime", hostname, os, arch, version, ct);
 
@@ -100,14 +98,8 @@ public sealed class AgentConnectionLoop(string configPath, string credentialPath
                 await disconnectTcs.Task.WaitAsync(ct);
 
                 await heartbeatCts.CancelAsync();
-                try
-                {
-                    await heartbeatTask;
-                }
-                catch (OperationCanceledException)
-                {
-                    // normal
-                }
+                try { await heartbeatTask; }
+                catch (OperationCanceledException) { }
 
                 await hub.StopAsync(CancellationToken.None);
             }

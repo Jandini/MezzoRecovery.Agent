@@ -62,8 +62,8 @@ jobs:
             /p:Version=${{ steps.gitversion.outputs.semVer }} \
             /p:InformationalVersion=${{ steps.gitversion.outputs.informationalVersion }} \
             -o "$PUB/linux-x64"
-          mv "$PUB/linux-x64/mezzorecovery-agent" "$PUB/mezzorecovery-agent-linux-x64"
-          (cd "$PUB" && sha256sum mezzorecovery-agent-linux-x64 > mezzorecovery-agent-linux-x64.sha256)
+          mv "$PUB/linux-x64/mra" "$PUB/mra-linux-x64"
+          (cd "$PUB" && sha256sum mra-linux-x64 > mra-linux-x64.sha256)
 
       - name: Prepare install script and version metadata
         run: |
@@ -74,11 +74,11 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: mezzorecovery-agent-linux
+          name: mra-linux
           path: |
             out/install
-            out/mezzorecovery-agent-linux-x64
-            out/mezzorecovery-agent-linux-x64.sha256
+            out/mra-linux-x64
+            out/mra-linux-x64.sha256
             out/version.json
 
   deploy:
@@ -94,7 +94,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: mezzorecovery-agent-linux
+          name: mra-linux
           path: staged
 
       - name: SCP → public_html/agent
@@ -104,7 +104,7 @@ jobs:
           username: ${{ secrets.FTP_USERNAME }}
           password: ${{ secrets.FTP_PASSWORD }}
           port: ${{ secrets.FTP_PORT || '22' }}
-          source: staged/install,staged/mezzorecovery-agent-linux-x64,staged/mezzorecovery-agent-linux-x64.sha256,staged/version.json
+          source: staged/install,staged/mra-linux-x64,staged/mra-linux-x64.sha256,staged/version.json
           strip_components: 1
           target: /home/u318688167/domains/mezzorecovery.com/public_html/agent
           overwrite: true

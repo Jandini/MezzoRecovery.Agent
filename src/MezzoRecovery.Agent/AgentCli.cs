@@ -2,6 +2,7 @@ using System.CommandLine;
 using MezzoRecovery.Agent.Commands.Enroll;
 using MezzoRecovery.Agent.Commands.Run;
 using MezzoRecovery.Agent.Commands.Status;
+using MezzoRecovery.Agent.Commands.Update;
 using MezzoRecovery.Agent.Commands.Version;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -11,7 +12,7 @@ internal static class AgentCli
 {
     public static RootCommand Build(IServiceProvider services)
     {
-        var root = new RootCommand("mezzorecovery-agent - MezzoRecovery Linux recovery host agent");
+        var root = new RootCommand("mra - MezzoRecovery Linux recovery host agent");
 
         var enroll = new Command("enroll", "Enroll this machine using a short-lived code from the MezzoRecovery UI.");
         EnrollCommandHandler.AddArguments(enroll);
@@ -48,6 +49,15 @@ internal static class AgentCli
             return Task.FromResult(handler.Run());
         });
         root.Subcommands.Add(version);
+
+        var update = new Command("update", "Download and install the latest mra binary from mezzorecovery.com.");
+        UpdateCommandHandler.AddOptions(update);
+        update.SetAction(async (parseResult, ct) =>
+        {
+            var handler = services.GetRequiredService<UpdateCommandHandler>();
+            return await handler.RunAsync(parseResult, ct).ConfigureAwait(false);
+        });
+        root.Subcommands.Add(update);
 
         return root;
     }

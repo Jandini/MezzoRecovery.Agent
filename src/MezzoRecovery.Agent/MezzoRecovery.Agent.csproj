@@ -6,7 +6,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>MezzoRecovery.Agent</RootNamespace>
-    <AssemblyName>mezzorecovery-agent</AssemblyName>
+    <AssemblyName>mra</AssemblyName>
     <Description>MezzoRecovery Linux recovery host agent (Stage 3)</Description>
     <Authors>Matt Janda</Authors>
     <RepositoryUrl>https://github.com/Jandini/MezzoRecovery.Agent</RepositoryUrl>

@@ -118,7 +118,7 @@ Examples:
 
 ```text
 https://mezzorecovery.com/agent/install
-https://mezzorecovery.com/agent/mezzorecovery-agent-linux-x64
+https://mezzorecovery.com/agent/mra-linux-x64
 https://mezzorecovery.com/agent/version.json
 ```
 
@@ -277,14 +277,6 @@ Alternative:
 ```bash
 wget -qO- https://mezzorecovery.com/agent/install | sudo bash -s MK7P9D
 ```
-
-Also evaluate whether the API should keep supporting an ultra-short dynamic installer URL:
-
-```bash
-curl -fsSL https://io.mezzorecovery.com/a/MK7P9D | sudo bash
-```
-
-If both are supported, recommend which should be shown by default in the App. The design must account for the fact that the Agent binary and generic install script are deployed to `https://mezzorecovery.com/agent/` by the Agent repository GitHub Actions workflow.
 
 The user should not have to type:
 
@@ -530,7 +522,8 @@ supports upgrade later
 Agent local paths:
 
 ```text
-/usr/local/bin/mezzorecovery-agent
+/usr/local/bin/mra
+/opt/mezzorecovery-agent/mra
 /etc/mezzorecovery-agent/agent.json
 /var/lib/mezzorecovery-agent/
 /var/lib/mezzorecovery-agent/agent.credential
@@ -541,7 +534,7 @@ Agent local paths:
 Service name:
 
 ```text
-mezzorecovery-agent.service
+mra.service
 ```
 
 The installer must refuse duplicate install by default.
@@ -574,7 +567,7 @@ Installer should check:
 /etc/mezzorecovery-agent/agent.json
 /var/lib/mezzorecovery-agent/agent.credential
 /var/lib/mezzorecovery-agent/machine.id
-/etc/systemd/system/mezzorecovery-agent.service
+/etc/systemd/system/mra.service
 ```
 
 If existing install is found:
@@ -892,7 +885,7 @@ curl -fsSL https://mezzorecovery.com/agent/install | sudo bash -s MK7P9D
 The installer should download the Native AOT agent binary from the public static agent path, for example:
 
 ```text
-https://mezzorecovery.com/agent/mezzorecovery-agent-linux-x64
+https://mezzorecovery.com/agent/mra-linux-x64
 ```
 
 The script should be safe and readable.
@@ -945,16 +938,17 @@ version
 CLI examples:
 
 ```bash
-sudo mezzorecovery-agent enroll MK7P9D
-sudo mezzorecovery-agent run
-sudo mezzorecovery-agent status
-mezzorecovery-agent version
+sudo mra enroll MK7P9D
+sudo mra run
+mra status
+mra version
+sudo mra update
 ```
 
 Systemd service should run:
 
 ```bash
-/usr/local/bin/mezzorecovery-agent run --config /etc/mezzorecovery-agent/agent.json
+/opt/mezzorecovery-agent/mra run --config /etc/mezzorecovery-agent/agent.json
 ```
 
 ---
@@ -986,6 +980,8 @@ SelfContained = true
 InvariantGlobalization = true if acceptable
 StripSymbols = true for release if appropriate
 ````
+
+Only linux-x64 is supported. linux-arm64 is out of scope.
 
 The design should call out any libraries that may cause Native AOT warnings and propose fixes.
 
@@ -1140,8 +1136,8 @@ Recommended public artifact layout:
 
 ```text
 https://mezzorecovery.com/agent/install
-https://mezzorecovery.com/agent/mezzorecovery-agent-linux-x64
-https://mezzorecovery.com/agent/mezzorecovery-agent-linux-x64.sha256
+https://mezzorecovery.com/agent/mra-linux-x64
+https://mezzorecovery.com/agent/mra-linux-x64.sha256
 https://mezzorecovery.com/agent/version.json
 ```
 
@@ -1165,7 +1161,7 @@ ensure installer downloads the Native AOT binary, not framework-dependent output
 The installer should download from:
 
 ```text
-https://mezzorecovery.com/agent/mezzorecovery-agent-linux-x64
+https://mezzorecovery.com/agent/mra-linux-x64
 ```
 
 The install command shown in the App should use the static installer plus short enrollment code:

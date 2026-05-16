@@ -43,6 +43,7 @@ The installer:
 | `/run/mezzorecovery-agent.lock` | Process lock — prevents duplicate instances |
 | `/etc/systemd/system/mra.service` | systemd unit |
 
+
 ## Commands
 
 ```bash

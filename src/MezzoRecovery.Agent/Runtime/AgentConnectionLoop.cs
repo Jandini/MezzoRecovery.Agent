@@ -59,7 +59,7 @@ public sealed class AgentConnectionLoop(string configPath, string credentialPath
                     })
                     .AddJsonProtocol(opts =>
                     {
-                        opts.PayloadSerializerOptions.TypeInfoResolverChain.Add(AgentJsonContext.Default);
+                        opts.PayloadSerializerOptions.TypeInfoResolver = AgentJsonContext.Default;
                     })
                     .WithAutomaticReconnect(
                         Enumerable.Range(0, 8)

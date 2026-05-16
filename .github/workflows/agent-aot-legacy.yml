@@ -1,0 +1,113 @@
+name: Agent AOT publish and deploy (legacy / glibc 2.31)
+
+# Publishes a Native AOT linux-x64 binary built inside an Ubuntu 20.04
+# container so the binary only requires glibc >= 2.31 (Ubuntu 20.04+).
+# The install script detects glibc at runtime and picks this binary when
+# glibc < 2.32 is present.
+
+on:
+  push:
+    branches: ["*"]
+  workflow_dispatch:
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: 1
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 1
+  DOTNET_NOLOGO: 1
+
+jobs:
+  publish-legacy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Install GitVersion
+        uses: gittools/actions/gitversion/setup@v3
+        with:
+          versionSpec: "5.x"
+
+      - name: Determine version
+        id: gitversion
+        uses: gittools/actions/gitversion/execute@v3
+        with:
+          useConfigFile: true
+
+      - name: Display GitVersion
+        run: |
+          echo "::group::GitVersion"
+          echo "SemVer:               ${{ steps.gitversion.outputs.semVer }}"
+          echo "InformationalVersion: ${{ steps.gitversion.outputs.informationalVersion }}"
+          echo "::endgroup::"
+
+      - name: Build mra inside Ubuntu 20.04 container (glibc 2.31)
+        env:
+          SEMVER: ${{ steps.gitversion.outputs.semVer }}
+          INFOVER: ${{ steps.gitversion.outputs.informationalVersion }}
+        run: |
+          set -e
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -e SEMVER \
+            -e INFOVER \
+            ubuntu:20.04 bash -c '
+              set -e
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update -qq
+              apt-get install -y --no-install-recommends \
+                curl ca-certificates clang zlib1g-dev libssl-dev libicu66
+              curl -fsSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh
+              bash /tmp/dotnet-install.sh --channel 10.0 --install-dir /usr/local/dotnet
+              export PATH=/usr/local/dotnet:$PATH
+              export DOTNET_ROOT=/usr/local/dotnet
+              dotnet publish /workspace/src/MezzoRecovery.Agent/MezzoRecovery.Agent.csproj \
+                -c Release \
+                -r linux-x64 \
+                /p:DisableGitVersionTask=true \
+                "/p:Version=$SEMVER" \
+                "/p:InformationalVersion=$INFOVER" \
+                -o /workspace/out/linux-x64-legacy
+              mv /workspace/out/linux-x64-legacy/mra /workspace/out/mra-linux-x64-legacy
+              rm -rf /workspace/out/linux-x64-legacy
+              chmod 755 /workspace/out/mra-linux-x64-legacy
+              (cd /workspace/out && sha256sum mra-linux-x64-legacy > mra-linux-x64-legacy.sha256)
+              chmod 644 /workspace/out/mra-linux-x64-legacy.sha256
+            '
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mra-linux-legacy
+          path: |
+            out/mra-linux-x64-legacy
+            out/mra-linux-x64-legacy.sha256
+
+  deploy-legacy:
+    runs-on: ubuntu-latest
+    needs: publish-legacy
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: mra-linux-legacy
+          path: staged
+
+      - name: SCP -> public_html/agent
+        uses: appleboy/scp-action@v1.0.0
+        with:
+          host: ${{ secrets.FTP_HOSTNAME }}
+          username: ${{ secrets.FTP_USERNAME }}
+          password: ${{ secrets.FTP_PASSWORD }}
+          port: ${{ secrets.FTP_PORT || '22' }}
+          source: staged/mra-linux-x64-legacy,staged/mra-linux-x64-legacy.sha256
+          strip_components: 1
+          target: /home/u318688167/domains/mezzorecovery.com/public_html/agent
+          overwrite: true

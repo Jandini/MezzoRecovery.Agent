@@ -5,4 +5,5 @@
     <Platform Name="x86" />
   </Configurations>
   <Project Path="src/MezzoRecovery.Agent/MezzoRecovery.Agent.csproj" />
+  <Project Path="tests/MezzoRecovery.Agent.Tests/MezzoRecovery.Agent.Tests.csproj" />
 </Solution>

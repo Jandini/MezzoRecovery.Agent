@@ -1,48 +1,37 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
-	<PropertyGroup>
-		<TargetFramework>net8.0</TargetFramework>
-		<ImplicitUsings>enable</ImplicitUsings>
-		<Nullable>enable</Nullable>
-	</PropertyGroup>
-	<PropertyGroup Condition=" '$(Configuration)' == 'Release' ">
-		<DebugType>none</DebugType>
-		<DebugSymbols>false</DebugSymbols>
-	</PropertyGroup>
-	<PropertyGroup>
-		<Authors>Matt Janda</Authors>
-		<PackageReadmeFile>README.md</PackageReadmeFile>		
-		<PackageId>MezzoRecovery.Agent</PackageId>
-		<AssemblyName>MezzoRecovery.Agent</AssemblyName>
-		<RootNamespace>MezzoRecovery.Agent</RootNamespace>
-		<Description>MezzoRecovery.Agent</Description>
-		<PackageTags>MezzoRecovery.Agent</PackageTags>
-		<RepositoryUrl>https://github.com/Jandini/MezzoRecovery.Agent</RepositoryUrl>
-		<PackageProjectUrl>https://github.com/Jandini/MezzoRecovery.Agent</PackageProjectUrl>
-	</PropertyGroup>
-	<PropertyGroup>
-		<OwnSolutionName>MezzoRecovery.Agent</OwnSolutionName>
-		<UseProjectReference Condition=" '$(SolutionName)' != '' and '$(SolutionName)' != '$(OwnSolutionName)' ">true</UseProjectReference>
-	</PropertyGroup>
-	<PropertyGroup>
-		<MezzoRecoveryTapeProject>../../../MezzoRecovery.Tape/src/MezzoRecovery.Tape/MezzoRecovery.Tape.csproj</MezzoRecoveryTapeProject>
-		<MezzoRecoveryTapeDriveProject>../../../MezzoRecovery.TapeDrive/src/MezzoRecovery.TapeDrive/MezzoRecovery.TapeDrive.csproj</MezzoRecoveryTapeDriveProject>
-		<MezzoRecoveryTapeImageProject>../../../MezzoRecovery.TapeImage/src/MezzoRecovery.TapeImage/MezzoRecovery.TapeImage.csproj</MezzoRecoveryTapeImageProject>
-	</PropertyGroup>
-	<ItemGroup>
-		<None Include="..\..\README.md" Pack="true" PackagePath="\" />
-	</ItemGroup>
-	<ItemGroup Condition=" '$(UseProjectReference)' == 'true' ">
-		<ProjectReference Include="$(MezzoRecoveryTapeProject)" Condition="Exists($(MezzoRecoveryTapeProject))" />
-		<ProjectReference Include="$(MezzoRecoveryTapeDriveProject)" Condition="Exists($(MezzoRecoveryTapeDriveProject))" />
-		<ProjectReference Include="$(MezzoRecoveryTapeImageProject)" Condition="Exists($(MezzoRecoveryTapeImageProject))" />
-	</ItemGroup>
-	<ItemGroup>
-		<PackageReference Include="GitVersion.MsBuild" Version="5.12.0">
-			<PrivateAssets>all</PrivateAssets>
-			<IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
-		</PackageReference>
-		<PackageReference Include="MezzoRecovery.TapeDrive" Version="0.1.1-main.5" Condition=" '$(UseProjectReference)' != 'true' or !Exists($(MezzoRecoveryTapeDriveProject)) " />
-		<PackageReference Include="MezzoRecovery.TapeImage" Version="0.1.1-main.3" Condition=" '$(UseProjectReference)' != 'true' or !Exists($(MezzoRecoveryTapeImageProject)) " />
-		<PackageReference Include="MezzoRecovery.Tape" Version="0.1.0-main.4" Condition=" '$(UseProjectReference)' != 'true' or !Exists($(MezzoRecoveryTapeProject)) " />
-	</ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>MezzoRecovery.Agent</RootNamespace>
+    <AssemblyName>mra</AssemblyName>
+    <Description>MezzoRecovery Linux recovery host agent (Stage 3)</Description>
+    <Authors>Matt Janda</Authors>
+    <RepositoryUrl>https://github.com/Jandini/MezzoRecovery.Agent</RepositoryUrl>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)'=='Release'">
+    <PublishAot>true</PublishAot>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <StripSymbols>true</StripSymbols>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="GitVersion.MsBuild" Version="5.12.0">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+    <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" Version="10.*" />
+    <PackageReference Include="Microsoft.AspNetCore.SignalR.Protocols.Json" Version="10.*" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.*" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.*" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.*" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="10.*" />
+    <PackageReference Include="System.CommandLine" Version="2.0.2" />
+  </ItemGroup>
+
 </Project>

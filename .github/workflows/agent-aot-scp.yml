@@ -1,0 +1,102 @@
+name: Agent AOT publish and deploy
+
+# Publishes Native AOT linux-x64 binary plus install.sh and version metadata,
+# then deploys to public_html/agent on every commit.
+
+on:
+  push:
+    branches: ["*"]
+  workflow_dispatch:
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: 1
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 1
+  DOTNET_NOLOGO: 1
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Install GitVersion
+        uses: gittools/actions/gitversion/setup@v3
+        with:
+          versionSpec: "5.x"
+
+      - name: Determine version
+        id: gitversion
+        uses: gittools/actions/gitversion/execute@v3
+        with:
+          useConfigFile: true
+
+      - name: Display GitVersion
+        run: |
+          echo "::group::GitVersion"
+          echo "SemVer:               ${{ steps.gitversion.outputs.semVer }}"
+          echo "InformationalVersion: ${{ steps.gitversion.outputs.informationalVersion }}"
+          echo "::endgroup::"
+
+      - name: Publish linux-x64 (AOT)
+        run: |
+          set -e
+          PUB="$GITHUB_WORKSPACE/out"
+          mkdir -p "$PUB"
+          dotnet publish "src/MezzoRecovery.Agent/MezzoRecovery.Agent.csproj" \
+            -c Release \
+            -r linux-x64 \
+            /p:DisableGitVersionTask=true \
+            /p:Version=${{ steps.gitversion.outputs.semVer }} \
+            /p:InformationalVersion=${{ steps.gitversion.outputs.informationalVersion }} \
+            -o "$PUB/linux-x64"
+          mv "$PUB/linux-x64/mra" "$PUB/mra-linux-x64"
+          (cd "$PUB" && sha256sum mra-linux-x64 > mra-linux-x64.sha256)
+
+      - name: Prepare install script and version metadata
+        run: |
+          PUB="$GITHUB_WORKSPACE/out"
+          cp deploy/install.sh "$PUB/install"
+          chmod +x "$PUB/install"
+          printf '{"version":"%s","commit":"%s"}\n' "${{ steps.gitversion.outputs.semVer }}" "${{ github.sha }}" > "$PUB/version.json"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mra-linux
+          path: |
+            out/install
+            out/mra-linux-x64
+            out/mra-linux-x64.sha256
+            out/version.json
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: publish
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: mra-linux
+          path: staged
+
+      - name: SCP → public_html/agent
+        uses: appleboy/scp-action@v1.0.0
+        with:
+          host: ${{ secrets.FTP_HOSTNAME }}
+          username: ${{ secrets.FTP_USERNAME }}
+          password: ${{ secrets.FTP_PASSWORD }}
+          port: ${{ secrets.FTP_PORT || '22' }}
+          source: staged/install,staged/mra-linux-x64,staged/mra-linux-x64.sha256,staged/version.json
+          strip_components: 1
+          target: /home/u318688167/domains/mezzorecovery.com/public_html/agent
+          overwrite: true
+          timeout: 120s
+          command_timeout: 20m

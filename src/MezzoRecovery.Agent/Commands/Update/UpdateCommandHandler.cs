@@ -55,7 +55,10 @@ internal sealed class UpdateCommandHandler(ILoggerFactory loggerFactory)
         var checksumUrl = $"{DownloadBaseUrl}/{checksumFileName}";
         var installPath = Path.Combine(InstallDir, BinaryName);
 
-        var tmp = Path.GetTempFileName();
+        // Temp file must be on the same filesystem as the target so File.Move
+        // uses rename(2) rather than falling back to a byte-copy, which would
+        // fail with ETXTBSY when the running binary is the update target.
+        var tmp = Path.Combine(InstallDir, $".{BinaryName}.new");
         var tmpChecksum = Path.GetTempFileName();
         try
         {
@@ -85,10 +88,14 @@ internal sealed class UpdateCommandHandler(ILoggerFactory loggerFactory)
             if (!noRestart)
                 RunSystemctl("stop", ServiceName, logger);
 
+            // Set permissions on the temp file before the atomic rename,
+            // so the live binary is never opened for writing.
+            File.SetUnixFileMode(tmp, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute
+                                     | UnixFileMode.GroupRead | UnixFileMode.GroupExecute
+                                     | UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
+
+            // rename(2) — atomic on same filesystem, safe while mra is running.
             File.Move(tmp, installPath, overwrite: true);
-            File.SetUnixFileMode(installPath, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute
-                                             | UnixFileMode.GroupRead | UnixFileMode.GroupExecute
-                                             | UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
 
             if (File.Exists(SymlinkPath) || File.Exists(SymlinkPath + ".tmp"))
             {

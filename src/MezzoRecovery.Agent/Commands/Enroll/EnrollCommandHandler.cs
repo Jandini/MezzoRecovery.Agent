@@ -47,7 +47,7 @@ internal sealed class EnrollCommandHandler
 
         if (File.Exists(credentialPath))
         {
-            Console.Error.WriteLine("Credential file already exists. Refusing to enroll again.");
+            Console.Error.WriteLine("Credential file already exists. Remove it first to re-enroll.");
             return 2;
         }
 

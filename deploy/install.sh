@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # MezzoRecovery Agent (mra) - bootstrap installer (x86_64 Linux + systemd).
 # Usage: curl -fsSL https://mezzorecovery.com/agent/install | sudo bash -s ENROLLMENT_CODE
+# Re-run with a new enrollment code on an existing host to re-enroll after revoke/replace.
 set -euo pipefail
 
 MEZZO_CODE="${1:-}"
+
 if [ -z "${MEZZO_CODE}" ]; then
   echo "Usage: sudo bash install.sh ENROLLMENT_CODE" >&2
   exit 1
@@ -34,10 +36,12 @@ API_BASE="${MEZZO_API_BASE:-https://io.mezzorecovery.com}"
 
 for marker in "${CFG_DIR}/agent.json" "${VAR_DIR}/agent.credential" "${VAR_DIR}/machine.id"; do
   if [ -e "${marker}" ]; then
-    echo "MezzoRecovery Agent already appears to be installed on this machine (${marker} exists)." >&2
-    echo "To update the agent binary, run: sudo mra update" >&2
-    echo "Refusing to enroll a second agent." >&2
-    exit 2
+    echo "Existing MezzoRecovery Agent installation detected. Cleaning up and re-enrolling."
+    if systemctl is-active --quiet mra.service 2>/dev/null; then
+      systemctl stop mra.service
+    fi
+    rm -f "${CFG_DIR}/agent.json" "${VAR_DIR}/agent.credential"
+    break
   fi
 done
 
@@ -71,7 +75,8 @@ chmod 0644 "${CFG_DIR}/agent.json"
 
 "${BIN_DIR}/mra" enroll "${MEZZO_CODE}" --config "${CFG_DIR}/agent.json" --credential "${VAR_DIR}/agent.credential" --machine-id "${VAR_DIR}/machine.id"
 
-cat > /etc/systemd/system/mra.service <<'UNIT'
+if [ ! -f /etc/systemd/system/mra.service ]; then
+  cat > /etc/systemd/system/mra.service <<'UNIT'
 [Unit]
 Description=MezzoRecovery Linux agent (mra)
 After=network-online.target
@@ -86,6 +91,7 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 UNIT
+fi
 
 systemctl daemon-reload
 systemctl enable mra.service

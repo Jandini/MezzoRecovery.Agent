@@ -32,6 +32,24 @@ jobs:
         with:
           dotnet-version: "10.0.x"
 
+      - name: Install GitVersion
+        uses: gittools/actions/gitversion/setup@v3
+        with:
+          versionSpec: "5.x"
+
+      - name: Determine version
+        id: gitversion
+        uses: gittools/actions/gitversion/execute@v3
+        with:
+          useConfigFile: true
+
+      - name: Display GitVersion
+        run: |
+          echo "::group::GitVersion"
+          echo "SemVer:               ${{ steps.gitversion.outputs.semVer }}"
+          echo "InformationalVersion: ${{ steps.gitversion.outputs.informationalVersion }}"
+          echo "::endgroup::"
+
       - name: Publish linux-x64 (AOT)
         run: |
           set -e
@@ -41,7 +59,8 @@ jobs:
             -c Release \
             -r linux-x64 \
             /p:DisableGitVersionTask=true \
-            /p:Version=${{ github.run_number }}.0.0 \
+            /p:Version=${{ steps.gitversion.outputs.semVer }} \
+            /p:InformationalVersion=${{ steps.gitversion.outputs.informationalVersion }} \
             -o "$PUB/linux-x64"
           mv "$PUB/linux-x64/mezzorecovery-agent" "$PUB/mezzorecovery-agent-linux-x64"
           (cd "$PUB" && sha256sum mezzorecovery-agent-linux-x64 > mezzorecovery-agent-linux-x64.sha256)
@@ -51,7 +70,7 @@ jobs:
           PUB="$GITHUB_WORKSPACE/out"
           cp deploy/install.sh "$PUB/install"
           chmod +x "$PUB/install"
-          printf '{"version":"%s.%s","commit":"%s"}\n' "${{ github.run_number }}" "0" "${{ github.sha }}" > "$PUB/version.json"
+          printf '{"version":"%s","commit":"%s"}\n' "${{ steps.gitversion.outputs.semVer }}" "${{ github.sha }}" > "$PUB/version.json"
 
       - uses: actions/upload-artifact@v4
         with:

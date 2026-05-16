@@ -4,6 +4,7 @@ using MezzoRecovery.Agent.Configuration;
 using MezzoRecovery.Agent.Contracts;
 using MezzoRecovery.Agent.Identity;
 using Microsoft.AspNetCore.SignalR.Client;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -55,6 +56,10 @@ public sealed class AgentConnectionLoop(string configPath, string credentialPath
                                 CancellationToken.None);
                             return tokenResp?.AccessToken;
                         };
+                    })
+                    .AddJsonProtocol(opts =>
+                    {
+                        opts.PayloadSerializerOptions.TypeInfoResolverChain.Add(AgentJsonContext.Default);
                     })
                     .WithAutomaticReconnect(
                         Enumerable.Range(0, 8)

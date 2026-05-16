@@ -23,6 +23,7 @@ public sealed record TokenApiResponse(
     [property: JsonPropertyName("expiresInSeconds")] int ExpiresInSeconds);
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
+[JsonSerializable(typeof(string))]
 [JsonSerializable(typeof(EnrollApiRequest))]
 [JsonSerializable(typeof(EnrollApiResponse))]
 [JsonSerializable(typeof(TokenApiRequest))]

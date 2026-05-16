@@ -63,6 +63,7 @@ jobs:
             -r linux-arm64 \
             /p:DisableGitVersionTask=true \
             /p:Version=${{ github.run_number }}.0.0 \
+            /p:ObjCopyName=aarch64-linux-gnu-objcopy \
             -o "$PUB/linux-arm64"
           mv "$PUB/linux-arm64/mezzorecovery-agent" "$PUB/mezzorecovery-agent-linux-arm64"
           (cd "$PUB" && sha256sum mezzorecovery-agent-linux-arm64 > mezzorecovery-agent-linux-arm64.sha256)

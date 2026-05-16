@@ -45,7 +45,19 @@ for marker in "${CFG_DIR}/agent.json" "${VAR_DIR}/agent.credential" "${VAR_DIR}/
   fi
 done
 
-BIN_NAME="mra-linux-x64"
+# Select binary based on glibc version - systems with glibc < 2.32 (e.g. Ubuntu 20.04)
+# require a binary built on Ubuntu 20.04 that only references glibc <= 2.31 symbols.
+_glibc_minor() {
+  ldd --version 2>&1 | awk 'NR==1 { match($NF, /[0-9]+\.([0-9]+)/, a); print a[1]+0 }'
+}
+_GLIBC_MINOR="$(_glibc_minor)"
+if [ "${_GLIBC_MINOR:-0}" -ge 32 ]; then
+  BIN_NAME="mra-linux-x64"
+else
+  echo "glibc 2.${_GLIBC_MINOR} detected - using Ubuntu 20.04 compatible binary."
+  BIN_NAME="mra-linux-x64-legacy"
+fi
+
 TMP_BIN="$(mktemp)"
 TMP_CHECKSUM="$(mktemp)"
 trap 'rm -f "${TMP_BIN}" "${TMP_CHECKSUM}"' EXIT

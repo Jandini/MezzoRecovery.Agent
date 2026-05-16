@@ -7,10 +7,11 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>MezzoRecovery.Agent</RootNamespace>
     <AssemblyName>mezzorecovery-agent</AssemblyName>
-    <StartupObject>MezzoRecovery.Agent.Program</StartupObject>
     <Description>MezzoRecovery Linux recovery host agent (Stage 3)</Description>
     <Authors>Matt Janda</Authors>
     <RepositoryUrl>https://github.com/Jandini/MezzoRecovery.Agent</RepositoryUrl>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)'=='Release'">
@@ -20,14 +21,16 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="GitVersion.MsBuild" Version="6.6.0">
+    <PackageReference Include="GitVersion.MsBuild" Version="5.12.0">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
     <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" Version="10.*" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.*" />
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.*" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.*" />
     <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="10.*" />
+    <PackageReference Include="System.CommandLine" Version="2.0.2" />
   </ItemGroup>
 
 </Project>

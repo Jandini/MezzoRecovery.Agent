@@ -4,6 +4,8 @@ name: Agent AOT publish and optional SCP
 # Optional SCP deploy to public_html/agent (same secrets pattern as MezzoRecovery.TapeTools).
 
 on:
+  push:
+    branches: ["*"]
   workflow_dispatch:
     inputs:
       scp:

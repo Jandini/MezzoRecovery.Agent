@@ -34,4 +34,8 @@
     <PackageReference Include="System.CommandLine" Version="2.0.2" />
   </ItemGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\MezzoRecovery.TapeDrive\src\MezzoRecovery.TapeDrive\MezzoRecovery.TapeDrive.csproj" />
+  </ItemGroup>
+
 </Project>

@@ -2,15 +2,22 @@ using System.Reflection;
 using MezzoRecovery.Agent.Api;
 using MezzoRecovery.Agent.Configuration;
 using MezzoRecovery.Agent.Contracts;
+using MezzoRecovery.Agent.Devices;
 using MezzoRecovery.Agent.Identity;
 using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 
 namespace MezzoRecovery.Agent.Runtime;
 
-public sealed class AgentConnectionLoop(string configPath, string credentialPath, ILogger? logger = null)
+public sealed class AgentConnectionLoop(
+    string configPath,
+    string credentialPath,
+    TapeDeviceDiscoveryService deviceDiscovery,
+    DeviceDiscoveryOptions discoveryOptions,
+    ILogger? logger = null)
 {
     private readonly ILogger _logger = logger ?? NullLogger.Instance;
 
@@ -78,12 +85,26 @@ public sealed class AgentConnectionLoop(string configPath, string credentialPath
                     try
                     {
                         await hub!.InvokeAsync("RegisterRuntime", hostname, os, arch, version, CancellationToken.None);
+                        await ReportDevicesAsync(hub!, CancellationToken.None);
                     }
                     catch (Exception ex)
                     {
                         _logger.LogError(ex, "RegisterRuntime after reconnect failed.");
                     }
                 };
+
+                hub.On("RefreshTapeDevices", async () =>
+                {
+                    _logger.LogInformation("RefreshTapeDevices command received from server.");
+                    try
+                    {
+                        await ReportDevicesAsync(hub!, CancellationToken.None);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Device refresh on demand failed.");
+                    }
+                });
 
                 var disconnectTcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
                 hub.Closed += _ =>
@@ -96,14 +117,20 @@ public sealed class AgentConnectionLoop(string configPath, string credentialPath
                 failureBackoff = TimeSpan.FromSeconds(2);
                 _logger.LogInformation("Connected to MezzoRecovery (agent {AgentId}).", cred.AgentId);
                 await hub.InvokeAsync("RegisterRuntime", hostname, os, arch, version, ct);
+                await ReportDevicesAsync(hub, ct);
 
                 using var heartbeatCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 var heartbeatTask = HeartbeatLoopAsync(hub, hostname, os, arch, version, heartbeatCts.Token);
+                var deviceRefreshTask = discoveryOptions.Enabled
+                    ? DeviceRefreshLoopAsync(hub, heartbeatCts.Token)
+                    : Task.CompletedTask;
 
                 await disconnectTcs.Task.WaitAsync(ct);
 
                 await heartbeatCts.CancelAsync();
                 try { await heartbeatTask; }
+                catch (OperationCanceledException) { }
+                try { await deviceRefreshTask; }
                 catch (OperationCanceledException) { }
 
                 await hub.StopAsync(CancellationToken.None);
@@ -134,6 +161,31 @@ public sealed class AgentConnectionLoop(string configPath, string credentialPath
         }
     }
 
+    private async Task ReportDevicesAsync(HubConnection hub, CancellationToken ct)
+    {
+        if (!discoveryOptions.Enabled)
+            return;
+
+        try
+        {
+            var devices = deviceDiscovery.DiscoverDevices();
+            await hub.InvokeAsync("ReportTapeDevices", devices.ToArray(), ct);
+            _logger.LogInformation("Reported {Count} tape device(s) to server.", devices.Count);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to report tape devices to server.");
+            try
+            {
+                await hub.InvokeAsync("ReportTapeDeviceDiscoveryFailed", ex.Message, ct);
+            }
+            catch
+            {
+                // ignore secondary failure
+            }
+        }
+    }
+
     private async Task HeartbeatLoopAsync(
         HubConnection connection,
         string hostname,
@@ -148,6 +200,23 @@ public sealed class AgentConnectionLoop(string configPath, string credentialPath
             {
                 await Task.Delay(TimeSpan.FromSeconds(20), ct);
                 await connection.InvokeAsync("Heartbeat", hostname, os, arch, version, ct);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // shutdown
+        }
+    }
+
+    private async Task DeviceRefreshLoopAsync(HubConnection connection, CancellationToken ct)
+    {
+        var interval = TimeSpan.FromSeconds(Math.Max(10, discoveryOptions.RefreshIntervalSeconds));
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                await Task.Delay(interval, ct);
+                await ReportDevicesAsync(connection, ct);
             }
         }
         catch (OperationCanceledException)

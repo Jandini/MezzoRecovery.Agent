@@ -3,6 +3,10 @@ using MezzoRecovery.Agent.Commands.Run;
 using MezzoRecovery.Agent.Commands.Status;
 using MezzoRecovery.Agent.Commands.Update;
 using MezzoRecovery.Agent.Commands.Version;
+using MezzoRecovery.Agent.Configuration;
+using MezzoRecovery.Agent.Devices;
+using MezzoRecovery.TapeDrive.Abstractions;
+using MezzoRecovery.TapeDrive.Linux.Discovery;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace MezzoRecovery.Agent.Extensions;
@@ -16,5 +20,8 @@ internal static class ServiceCollectionExtensions
             .AddTransient<RunCommandHandler>()
             .AddTransient<StatusCommandHandler>()
             .AddTransient<UpdateCommandHandler>()
-            .AddTransient<VersionCommandHandler>();
+            .AddTransient<VersionCommandHandler>()
+            .AddSingleton<DeviceDiscoveryOptions>()
+            .AddSingleton<ITapeDriveEnumerator, SysfsTapeDriveEnumerator>()
+            .AddTransient<TapeDeviceDiscoveryService>();
 }

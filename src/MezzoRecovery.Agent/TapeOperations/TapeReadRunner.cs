@@ -201,10 +201,14 @@ public sealed class TapeReadRunner(
             state.Remove(command.TapeDeviceId);
             cts.Dispose();
 
-            // Operation is over -- run a full discovery so the UI converges immediately
-            // even if a single TapeDeviceOperationCleared frame is dropped in transit.
+            // Operation is over. Push the authoritative active-ops snapshot first so
+            // the API drops any stale live entry for this device (heals the case where
+            // the TapeOperationCancelled/Completed frame was delayed or dropped), then
+            // run a full discovery so the device status (Ready / NoMedia / ...) is
+            // also fresh on the UI.
             try
             {
+                await publisher.PublishActiveOperationsAsync(hub, CancellationToken.None);
                 await publisher.PublishFullDiscoveryAsync(hub, CancellationToken.None);
             }
             catch (Exception ex)

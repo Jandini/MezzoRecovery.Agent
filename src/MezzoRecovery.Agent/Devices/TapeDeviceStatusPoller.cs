@@ -41,6 +41,11 @@ public sealed class TapeDeviceStatusPoller(
                 {
                     if (await PollOnceAsync(ct))
                         await publisher.PublishCurrentAsync(hub, ct);
+
+                    // Always reconcile live operations -- if the agent claims nothing
+                    // for a device, the API drops any stale live entry. This is what
+                    // heals a ghost "still reading" badge after a missed terminal frame.
+                    await publisher.PublishActiveOperationsAsync(hub, ct);
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {

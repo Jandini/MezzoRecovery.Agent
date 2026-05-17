@@ -125,6 +125,7 @@ public sealed class TapeMediaControlService(
 
             try
             {
+                await publisher.PublishActiveOperationsAsync(hub, CancellationToken.None);
                 await publisher.PublishFullDiscoveryAsync(hub, CancellationToken.None);
             }
             catch (Exception ex)

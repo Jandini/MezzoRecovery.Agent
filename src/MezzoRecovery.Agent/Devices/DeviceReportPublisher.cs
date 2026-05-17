@@ -6,8 +6,9 @@ using Microsoft.Extensions.Logging;
 namespace MezzoRecovery.Agent.Devices;
 
 /// <summary>
-/// All paths that report tape device state to the API funnel through here so the
-/// store and the wire stay in lockstep.
+/// All paths that report tape device state and live operation state to the API
+/// funnel through here so the store, the in-memory mirror, and the wire stay in
+/// lockstep.
 /// </summary>
 public sealed class DeviceReportPublisher(
     TapeDeviceDiscoveryService discovery,
@@ -64,6 +65,27 @@ public sealed class DeviceReportPublisher(
         catch (Exception ex)
         {
             logger.LogWarning(ex, "Failed to publish cached device state.");
+        }
+    }
+
+    /// <summary>
+    /// Sends the agent's authoritative live-operation snapshot to the API. The
+    /// API uses this to reconcile its in-memory <c>IDeviceLiveStateService</c>:
+    /// any live entry the agent no longer claims is cleared and broadcast to
+    /// the UI. Called after every operation terminates and on every poll tick,
+    /// so a single dropped <c>TapeOperationCancelled</c> can never leave a
+    /// ghost "still reading" badge on a card.
+    /// </summary>
+    public async Task PublishActiveOperationsAsync(HubConnection hub, CancellationToken ct)
+    {
+        try
+        {
+            var snapshots = operationState.BuildSnapshots();
+            await hub.InvokeAsync("ReportActiveOperations", snapshots, ct);
+        }
+        catch (Exception ex)
+        {
+            logger.LogDebug(ex, "Failed to publish active operations snapshot.");
         }
     }
 }

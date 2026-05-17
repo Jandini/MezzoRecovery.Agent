@@ -23,7 +23,6 @@ public sealed class AgentConnectionLoop(
     TapeReadRunner tapeReadRunner,
     TapeMediaControlService tapeMediaControl,
     StopOperationHandler stopHandler,
-    TapeOperationStateStore operationState,
     ILogger? logger = null)
 {
     private readonly ILogger _logger = logger ?? NullLogger.Instance;
@@ -97,7 +96,7 @@ public sealed class AgentConnectionLoop(
                         {
                             await hub!.InvokeAsync("RegisterRuntime", hostname, os, arch, version, CancellationToken.None);
                             await reportPublisher.PublishFullDiscoveryAsync(hub!, CancellationToken.None);
-                            await ReportActiveOperationsAsync(hub!, CancellationToken.None);
+                            await reportPublisher.PublishActiveOperationsAsync(hub!, CancellationToken.None);
                             _logger.LogInformation("Re-registration completed after reconnect.");
                             return;
                         }
@@ -178,7 +177,7 @@ public sealed class AgentConnectionLoop(
                 _logger.LogInformation("Connected to MezzoRecovery (agent {AgentId}).", cred.AgentId);
                 await hub.InvokeAsync("RegisterRuntime", hostname, os, arch, version, ct);
                 await reportPublisher.PublishFullDiscoveryAsync(hub, ct);
-                await ReportActiveOperationsAsync(hub, ct);
+                await reportPublisher.PublishActiveOperationsAsync(hub, ct);
 
                 using var heartbeatCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 var heartbeatTask = HeartbeatLoopAsync(hub, hostname, os, arch, version, heartbeatCts.Token);
@@ -257,19 +256,6 @@ public sealed class AgentConnectionLoop(
         catch (OperationCanceledException)
         {
             // shutdown
-        }
-    }
-
-    private async Task ReportActiveOperationsAsync(HubConnection hub, CancellationToken ct)
-    {
-        try
-        {
-            var snapshots = operationState.BuildSnapshots();
-            await hub.InvokeAsync("ReportActiveOperations", snapshots, ct);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Failed to report active tape operations.");
         }
     }
 

@@ -2,6 +2,9 @@ name: Agent AOT publish and deploy
 
 # Publishes Native AOT linux-x64 binary plus install.sh and version metadata,
 # then deploys to public_html/agent on every commit.
+#
+# Secrets (Settings → Secrets and variables → Actions):
+#   NUGET_TOKEN - PAT with read:packages (MezzoRecovery.TapeDrive from GitHub Packages)
 
 on:
   push:
@@ -12,12 +15,14 @@ env:
   DOTNET_CLI_TELEMETRY_OPTOUT: 1
   DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 1
   DOTNET_NOLOGO: 1
+  NUGET_AUTH_TOKEN: ${{ secrets.NUGET_TOKEN }}
 
 jobs:
   publish:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      packages: read
     steps:
       - uses: actions/checkout@v6
         with:
@@ -26,6 +31,7 @@ jobs:
       - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: "10.0.x"
+          source-url: https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json
 
       - name: Install GitVersion
         uses: gittools/actions/gitversion/setup@v3
@@ -45,19 +51,32 @@ jobs:
           echo "InformationalVersion: ${{ steps.gitversion.outputs.informationalVersion }}"
           echo "::endgroup::"
 
+      - name: Restore
+        run: dotnet restore "src/MezzoRecovery.Agent/MezzoRecovery.Agent.csproj" -r linux-x64 -p:PublishAot=true
+
       - name: Publish linux-x64 (AOT)
         run: |
-          set -e
+          set -euo pipefail
           PUB="$GITHUB_WORKSPACE/out"
+          OUTDIR="$PUB/linux-x64"
+          rm -rf "$OUTDIR"
           mkdir -p "$PUB"
           dotnet publish "src/MezzoRecovery.Agent/MezzoRecovery.Agent.csproj" \
+            --no-restore \
             -c Release \
             -r linux-x64 \
+            /p:PublishAot=true \
             /p:DisableGitVersionTask=true \
             /p:Version=${{ steps.gitversion.outputs.semVer }} \
             /p:InformationalVersion=${{ steps.gitversion.outputs.informationalVersion }} \
-            -o "$PUB/linux-x64"
-          mv "$PUB/linux-x64/mra" "$PUB/mra-linux-x64"
+            -o "$OUTDIR"
+          if [ ! -f "$OUTDIR/mra" ]; then
+            echo "Native AOT binary not found at $OUTDIR/mra. Published files:"
+            ls -la "$OUTDIR"
+            exit 1
+          fi
+          mv "$OUTDIR/mra" "$PUB/mra-linux-x64"
+          rm -rf "$OUTDIR"
           (cd "$PUB" && sha256sum mra-linux-x64 > mra-linux-x64.sha256)
 
       - name: Prepare install script and version metadata

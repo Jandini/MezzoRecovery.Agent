@@ -1,11 +1,12 @@
 using System.CommandLine;
 using System.Runtime.InteropServices;
+using System.Text.RegularExpressions;
 using MezzoRecovery.Agent.Configuration;
 using Microsoft.Extensions.Logging;
 
 namespace MezzoRecovery.Agent.Commands.Update;
 
-internal sealed class UpdateCommandHandler(ILoggerFactory loggerFactory)
+internal sealed partial class UpdateCommandHandler(ILoggerFactory loggerFactory)
 {
     private const string DownloadBaseUrl = "https://mezzorecovery.com/agent";
     private const string ServiceName = "mra.service";
@@ -67,7 +68,7 @@ internal sealed class UpdateCommandHandler(ILoggerFactory loggerFactory)
             return 1;
         }
 
-        var binFileName = $"{BinaryName}-{rid}";
+        var binFileName = SelectBinaryFileName(rid, logger);
         var checksumFileName = $"{binFileName}.sha256";
         var binUrl = $"{DownloadBaseUrl}/{binFileName}";
         var checksumUrl = $"{DownloadBaseUrl}/{checksumFileName}";
@@ -242,5 +243,54 @@ internal sealed class UpdateCommandHandler(ILoggerFactory loggerFactory)
         await using var stream = File.OpenRead(path);
         var hash = await sha.ComputeHashAsync(stream, ct);
         return Convert.ToHexString(hash).ToLowerInvariant();
+    }
+
+    // Matches a version pair such as "2.35" anywhere in a line.
+    [GeneratedRegex(@"\b(\d+)\.(\d+)\b")]
+    private static partial Regex GlibcVersionRegex();
+
+    private static string SelectBinaryFileName(string rid, ILogger logger)
+    {
+        const int legacyMinorThreshold = 32;
+        try
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo("ldd", "--version")
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+            };
+            using var proc = System.Diagnostics.Process.Start(psi);
+            if (proc is null)
+            {
+                logger.LogWarning("Could not start ldd to detect glibc version - using legacy binary.");
+                return $"{BinaryName}-{rid}-legacy";
+            }
+
+            var firstLine = proc.StandardOutput.ReadLine() ?? string.Empty;
+            if (string.IsNullOrEmpty(firstLine))
+                firstLine = proc.StandardError.ReadLine() ?? string.Empty;
+            proc.WaitForExit(3_000);
+
+            // Find the rightmost version pair on the first line, e.g. "ldd (GNU libc) 2.35" -> 35.
+            var matches = GlibcVersionRegex().Matches(firstLine);
+            if (matches.Count > 0 && int.TryParse(matches[matches.Count - 1].Groups[2].Value, out var minor))
+            {
+                if (minor >= legacyMinorThreshold)
+                {
+                    logger.LogInformation("glibc minor version {Minor} - using standard binary.", minor);
+                    return $"{BinaryName}-{rid}";
+                }
+                logger.LogInformation("glibc minor version {Minor} (< {Threshold}) - using legacy binary.", minor, legacyMinorThreshold);
+                return $"{BinaryName}-{rid}-legacy";
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Failed to detect glibc version - using legacy binary.");
+        }
+
+        logger.LogWarning("Could not determine glibc version - using legacy binary.");
+        return $"{BinaryName}-{rid}-legacy";
     }
 }

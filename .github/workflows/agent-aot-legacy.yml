@@ -4,6 +4,9 @@ name: Agent AOT publish and deploy (legacy / glibc 2.31)
 # container so the binary only requires glibc >= 2.31 (Ubuntu 20.04+).
 # The install script detects glibc at runtime and picks this binary when
 # glibc < 2.32 is present.
+#
+# Secrets (Settings → Secrets and variables → Actions):
+#   NUGET_TOKEN - PAT with read:packages (MezzoRecovery.TapeDrive from GitHub Packages)
 
 on:
   push:
@@ -14,12 +17,14 @@ env:
   DOTNET_CLI_TELEMETRY_OPTOUT: 1
   DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 1
   DOTNET_NOLOGO: 1
+  NUGET_AUTH_TOKEN: ${{ secrets.NUGET_TOKEN }}
 
 jobs:
   publish-legacy:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      packages: read
     steps:
       - uses: actions/checkout@v6
         with:
@@ -51,6 +56,9 @@ jobs:
         env:
           SEMVER: ${{ steps.gitversion.outputs.semVer }}
           INFOVER: ${{ steps.gitversion.outputs.informationalVersion }}
+          GITHUB_OWNER: ${{ github.repository_owner }}
+          GITHUB_ACTOR: ${{ github.actor }}
+          NUGET_AUTH_TOKEN: ${{ secrets.NUGET_TOKEN }}
         run: |
           set -e
           mkdir -p "$GITHUB_WORKSPACE/out"
@@ -58,25 +66,46 @@ jobs:
             -v "$GITHUB_WORKSPACE:/workspace" \
             -e SEMVER \
             -e INFOVER \
+            -e NUGET_AUTH_TOKEN \
+            -e GITHUB_OWNER \
+            -e GITHUB_ACTOR \
             ubuntu:20.04 bash -c '
               set -e
               export DEBIAN_FRONTEND=noninteractive
               apt-get update -qq
               apt-get install -y --no-install-recommends \
-                curl ca-certificates clang zlib1g-dev libssl-dev libicu66
+                curl ca-certificates clang zlib1g-dev libssl-dev libicu66 build-essential
               curl -fsSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh
               bash /tmp/dotnet-install.sh --channel 10.0 --install-dir /usr/local/dotnet
               export PATH=/usr/local/dotnet:$PATH
               export DOTNET_ROOT=/usr/local/dotnet
+              SOURCE="https://nuget.pkg.github.com/${GITHUB_OWNER}/index.json"
+              dotnet nuget add source "$SOURCE" \
+                --name github \
+                --username "${GITHUB_ACTOR}" \
+                --password "${NUGET_AUTH_TOKEN}" \
+                --store-password-in-clear-text \
+                --valid-authentication-types basic
+              dotnet restore /workspace/src/MezzoRecovery.Agent/MezzoRecovery.Agent.csproj -r linux-x64 -p:PublishAot=true
+              OUTDIR=/workspace/out/linux-x64-legacy
+              rm -rf "$OUTDIR"
               dotnet publish /workspace/src/MezzoRecovery.Agent/MezzoRecovery.Agent.csproj \
+                --no-restore \
                 -c Release \
                 -r linux-x64 \
+                /p:PublishAot=true \
+                /p:IlcInstructionSet=base \
                 /p:DisableGitVersionTask=true \
                 "/p:Version=$SEMVER" \
                 "/p:InformationalVersion=$INFOVER" \
-                -o /workspace/out/linux-x64-legacy
-              mv /workspace/out/linux-x64-legacy/mra /workspace/out/mra-linux-x64-legacy
-              rm -rf /workspace/out/linux-x64-legacy
+                -o "$OUTDIR"
+              if [ ! -f "$OUTDIR/mra" ]; then
+                echo "Native AOT binary not found at $OUTDIR/mra. Published files:"
+                ls -la "$OUTDIR"
+                exit 1
+              fi
+              mv "$OUTDIR/mra" /workspace/out/mra-linux-x64-legacy
+              rm -rf "$OUTDIR"
               chmod 755 /workspace/out/mra-linux-x64-legacy
               (cd /workspace/out && sha256sum mra-linux-x64-legacy > mra-linux-x64-legacy.sha256)
               chmod 644 /workspace/out/mra-linux-x64-legacy.sha256

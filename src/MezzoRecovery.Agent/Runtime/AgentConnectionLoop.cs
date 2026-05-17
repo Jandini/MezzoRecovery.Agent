@@ -2,22 +2,30 @@ using System.Reflection;
 using MezzoRecovery.Agent.Api;
 using MezzoRecovery.Agent.Configuration;
 using MezzoRecovery.Agent.Contracts;
+using MezzoRecovery.Agent.Devices;
 using MezzoRecovery.Agent.Identity;
+using MezzoRecovery.TapeDrive.Abstractions;
 using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 
 namespace MezzoRecovery.Agent.Runtime;
 
-public sealed class AgentConnectionLoop(string configPath, string credentialPath, ILogger? logger = null)
+public sealed class AgentConnectionLoop(
+    string configPath,
+    string credentialPath,
+    TapeDeviceDiscoveryService deviceDiscovery,
+    DeviceDiscoveryOptions discoveryOptions,
+    IScsiHostEnumerator scsiEnumerator,
+    ILogger? logger = null)
 {
     private readonly ILogger _logger = logger ?? NullLogger.Instance;
 
     public async Task RunAsync(CancellationToken ct)
     {
         using var _ = new ProcessLock(AgentPaths.DefaultLockPath);
-        using var http = new HttpClient();
 
         var cfg = await AgentConfigLoader.LoadAsync(configPath, ct);
         var baseUri = new Uri(cfg.ApiBaseUrl.TrimEnd('/') + "/");
@@ -28,7 +36,8 @@ public sealed class AgentConnectionLoop(string configPath, string credentialPath
             return;
         }
 
-        var api = new AgentApiClient(http);
+        // Declare here; a fresh instance is created inside the loop on each cycle.
+        AgentApiClient api = null!;
         var version = Assembly.GetExecutingAssembly().GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
                      ?? Assembly.GetExecutingAssembly().GetName().Version?.ToString()
                      ?? "0.0.0";
@@ -42,6 +51,10 @@ public sealed class AgentConnectionLoop(string configPath, string credentialPath
 
         while (!ct.IsCancellationRequested)
         {
+            // Fresh HttpClient per connection cycle prevents stale TCP connections
+            // from a previous server instance interfering with token requests.
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+            api = new AgentApiClient(http);
             HubConnection? hub = null;
             try
             {
@@ -61,29 +74,70 @@ public sealed class AgentConnectionLoop(string configPath, string credentialPath
                     {
                         opts.PayloadSerializerOptions.TypeInfoResolver = AgentJsonContext.Default;
                     })
-                    .WithAutomaticReconnect(
-                        Enumerable.Range(0, 8)
-                            .Select(n => TimeSpan.FromSeconds(Math.Min(60, Math.Pow(2, n))))
-                            .ToArray())
+                    .WithAutomaticReconnect(new UnboundedRetryPolicy())
                     .Build();
+
+                var reconnectAttempts = 0;
 
                 hub.Reconnecting += error =>
                 {
-                    _logger.LogWarning(error, "SignalR reconnecting...");
+                    var attempt = Interlocked.Increment(ref reconnectAttempts);
+                    _logger.LogWarning(error, "SignalR reconnecting (attempt {Attempt}).", attempt);
                     return Task.CompletedTask;
                 };
                 hub.Reconnected += async connectionId =>
                 {
-                    _logger.LogInformation("SignalR reconnected. ConnectionId={Id}", connectionId);
+                    Interlocked.Exchange(ref reconnectAttempts, 0);
+                    _logger.LogInformation("SignalR reconnected (ConnectionId={Id}). Re-registering with server.", connectionId);
+                    for (var attempt = 1; attempt <= 5; attempt++)
+                    {
+                        try
+                        {
+                            await hub!.InvokeAsync("RegisterRuntime", hostname, os, arch, version, CancellationToken.None);
+                            await ReportDevicesAsync(hub!, CancellationToken.None);
+                            _logger.LogInformation("Re-registration completed after reconnect.");
+                            return;
+                        }
+                        catch (Exception ex)
+                        {
+                            if (attempt == 5)
+                                _logger.LogError(ex, "Re-registration after reconnect failed after {Attempts} attempts - agent may appear offline.", attempt);
+                            else
+                            {
+                                _logger.LogWarning(ex, "Re-registration attempt {Attempt} failed, retrying in {Delay}s.", attempt, attempt * 2);
+                                await Task.Delay(TimeSpan.FromSeconds(attempt * 2), CancellationToken.None);
+                            }
+                        }
+                    }
+                };
+
+                hub.On("RefreshTapeDevices", async () =>
+                {
+                    _logger.LogInformation("RefreshTapeDevices command received from server.");
                     try
                     {
-                        await hub!.InvokeAsync("RegisterRuntime", hostname, os, arch, version, CancellationToken.None);
+                        await ReportDevicesAsync(hub!, CancellationToken.None);
                     }
                     catch (Exception ex)
                     {
-                        _logger.LogError(ex, "RegisterRuntime after reconnect failed.");
+                        _logger.LogError(ex, "Device refresh on demand failed.");
                     }
-                };
+                });
+
+                hub.On("RescanScsi", async () =>
+                {
+                    _logger.LogInformation("RescanScsi command received from server.");
+                    try
+                    {
+                        scsiEnumerator.ScanScsiHosts();
+                        _logger.LogInformation("SCSI host scan completed. Re-discovering devices.");
+                        await ReportDevicesAsync(hub!, CancellationToken.None);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "SCSI rescan failed.");
+                    }
+                });
 
                 var disconnectTcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
                 hub.Closed += _ =>
@@ -96,14 +150,20 @@ public sealed class AgentConnectionLoop(string configPath, string credentialPath
                 failureBackoff = TimeSpan.FromSeconds(2);
                 _logger.LogInformation("Connected to MezzoRecovery (agent {AgentId}).", cred.AgentId);
                 await hub.InvokeAsync("RegisterRuntime", hostname, os, arch, version, ct);
+                await ReportDevicesAsync(hub, ct);
 
                 using var heartbeatCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 var heartbeatTask = HeartbeatLoopAsync(hub, hostname, os, arch, version, heartbeatCts.Token);
+                var deviceRefreshTask = discoveryOptions.Enabled
+                    ? DeviceRefreshLoopAsync(hub, heartbeatCts.Token)
+                    : Task.CompletedTask;
 
                 await disconnectTcs.Task.WaitAsync(ct);
 
                 await heartbeatCts.CancelAsync();
                 try { await heartbeatTask; }
+                catch (OperationCanceledException) { }
+                try { await deviceRefreshTask; }
                 catch (OperationCanceledException) { }
 
                 await hub.StopAsync(CancellationToken.None);
@@ -134,6 +194,31 @@ public sealed class AgentConnectionLoop(string configPath, string credentialPath
         }
     }
 
+    private async Task ReportDevicesAsync(HubConnection hub, CancellationToken ct)
+    {
+        if (!discoveryOptions.Enabled)
+            return;
+
+        try
+        {
+            var devices = deviceDiscovery.DiscoverDevices();
+            await hub.InvokeAsync("ReportTapeDevices", devices.ToArray(), ct);
+            _logger.LogInformation("Reported {Count} tape device(s) to server.", devices.Count);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to report tape devices to server.");
+            try
+            {
+                await hub.InvokeAsync("ReportTapeDeviceDiscoveryFailed", ex.Message, ct);
+            }
+            catch
+            {
+                // ignore secondary failure
+            }
+        }
+    }
+
     private async Task HeartbeatLoopAsync(
         HubConnection connection,
         string hostname,
@@ -147,12 +232,53 @@ public sealed class AgentConnectionLoop(string configPath, string credentialPath
             while (!ct.IsCancellationRequested)
             {
                 await Task.Delay(TimeSpan.FromSeconds(20), ct);
-                await connection.InvokeAsync("Heartbeat", hostname, os, arch, version, ct);
+                try
+                {
+                    await connection.InvokeAsync("Heartbeat", hostname, os, arch, version, ct);
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    // Connection is likely reconnecting - this is expected during server restarts.
+                    _logger.LogDebug(ex, "Heartbeat send failed (connection may be reconnecting).");
+                }
             }
         }
         catch (OperationCanceledException)
         {
             // shutdown
+        }
+    }
+
+    private async Task DeviceRefreshLoopAsync(HubConnection connection, CancellationToken ct)
+    {
+        var interval = TimeSpan.FromSeconds(Math.Max(10, discoveryOptions.RefreshIntervalSeconds));
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                await Task.Delay(interval, ct);
+                await ReportDevicesAsync(connection, ct);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // shutdown
+        }
+    }
+
+    // Retries reconnection indefinitely with capped exponential backoff.
+    // Prevents WithAutomaticReconnect from exhausting a fixed retry budget
+    // when the server takes more than a few minutes to restart.
+    private sealed class UnboundedRetryPolicy : IRetryPolicy
+    {
+        public TimeSpan? NextRetryDelay(RetryContext retryContext)
+        {
+            var seconds = Math.Min(60.0, Math.Pow(2, retryContext.PreviousRetryCount));
+            return TimeSpan.FromSeconds(seconds);
         }
     }
 }

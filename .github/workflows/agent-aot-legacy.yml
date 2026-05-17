@@ -74,7 +74,7 @@ jobs:
               export DEBIAN_FRONTEND=noninteractive
               apt-get update -qq
               apt-get install -y --no-install-recommends \
-                curl ca-certificates clang zlib1g-dev libssl-dev libicu66
+                curl ca-certificates clang zlib1g-dev libssl-dev libicu66 build-essential
               curl -fsSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh
               bash /tmp/dotnet-install.sh --channel 10.0 --install-dir /usr/local/dotnet
               export PATH=/usr/local/dotnet:$PATH
@@ -86,17 +86,26 @@ jobs:
                 --password "${NUGET_AUTH_TOKEN}" \
                 --store-password-in-clear-text \
                 --valid-authentication-types basic
-              dotnet restore /workspace/src/MezzoRecovery.Agent/MezzoRecovery.Agent.csproj -r linux-x64
+              dotnet restore /workspace/src/MezzoRecovery.Agent/MezzoRecovery.Agent.csproj -r linux-x64 -p:PublishAot=true
+              OUTDIR=/workspace/out/linux-x64-legacy
+              rm -rf "$OUTDIR"
               dotnet publish /workspace/src/MezzoRecovery.Agent/MezzoRecovery.Agent.csproj \
                 --no-restore \
                 -c Release \
                 -r linux-x64 \
+                /p:PublishAot=true \
+                /p:IlcInstructionSet=base \
                 /p:DisableGitVersionTask=true \
                 "/p:Version=$SEMVER" \
                 "/p:InformationalVersion=$INFOVER" \
-                -o /workspace/out/linux-x64-legacy
-              mv /workspace/out/linux-x64-legacy/mra /workspace/out/mra-linux-x64-legacy
-              rm -rf /workspace/out/linux-x64-legacy
+                -o "$OUTDIR"
+              if [ ! -f "$OUTDIR/mra" ]; then
+                echo "Native AOT binary not found at $OUTDIR/mra. Published files:"
+                ls -la "$OUTDIR"
+                exit 1
+              fi
+              mv "$OUTDIR/mra" /workspace/out/mra-linux-x64-legacy
+              rm -rf "$OUTDIR"
               chmod 755 /workspace/out/mra-linux-x64-legacy
               (cd /workspace/out && sha256sum mra-linux-x64-legacy > mra-linux-x64-legacy.sha256)
               chmod 644 /workspace/out/mra-linux-x64-legacy.sha256

@@ -52,22 +52,31 @@ jobs:
           echo "::endgroup::"
 
       - name: Restore
-        run: dotnet restore "src/MezzoRecovery.Agent/MezzoRecovery.Agent.csproj" -r linux-x64
+        run: dotnet restore "src/MezzoRecovery.Agent/MezzoRecovery.Agent.csproj" -r linux-x64 -p:PublishAot=true
 
       - name: Publish linux-x64 (AOT)
         run: |
-          set -e
+          set -euo pipefail
           PUB="$GITHUB_WORKSPACE/out"
+          OUTDIR="$PUB/linux-x64"
+          rm -rf "$OUTDIR"
           mkdir -p "$PUB"
           dotnet publish "src/MezzoRecovery.Agent/MezzoRecovery.Agent.csproj" \
             --no-restore \
             -c Release \
             -r linux-x64 \
+            /p:PublishAot=true \
             /p:DisableGitVersionTask=true \
             /p:Version=${{ steps.gitversion.outputs.semVer }} \
             /p:InformationalVersion=${{ steps.gitversion.outputs.informationalVersion }} \
-            -o "$PUB/linux-x64"
-          mv "$PUB/linux-x64/mra" "$PUB/mra-linux-x64"
+            -o "$OUTDIR"
+          if [ ! -f "$OUTDIR/mra" ]; then
+            echo "Native AOT binary not found at $OUTDIR/mra. Published files:"
+            ls -la "$OUTDIR"
+            exit 1
+          fi
+          mv "$OUTDIR/mra" "$PUB/mra-linux-x64"
+          rm -rf "$OUTDIR"
           (cd "$PUB" && sha256sum mra-linux-x64 > mra-linux-x64.sha256)
 
       - name: Prepare install script and version metadata

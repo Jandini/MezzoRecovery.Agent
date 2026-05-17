@@ -34,8 +34,21 @@
     <PackageReference Include="System.CommandLine" Version="2.0.2" />
   </ItemGroup>
 
-  <ItemGroup>
-    <ProjectReference Include="..\..\..\MezzoRecovery.TapeDrive\src\MezzoRecovery.TapeDrive\MezzoRecovery.TapeDrive.csproj" />
-  </ItemGroup>
+	<PropertyGroup>
+		<OwnSolutionName>MezzoRecovery.Agent</OwnSolutionName>
+		<UseProjectReference Condition=" '$(SolutionName)' != '' and '$(SolutionName)' != '$(OwnSolutionName)' ">true</UseProjectReference>
+	</PropertyGroup>
+
+	<PropertyGroup>
+		<MezzoRecoveryTapeDriveProject>../../../MezzoRecovery.TapeDrive/src/MezzoRecovery.TapeDrive/MezzoRecovery.TapeDrive.csproj</MezzoRecoveryTapeDriveProject>
+	</PropertyGroup>
+
+	<ItemGroup Condition=" '$(UseProjectReference)' == 'true' ">
+		<ProjectReference Include="$(MezzoRecoveryTapeDriveProject)" Condition="Exists($(MezzoRecoveryTapeDriveProject))" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<PackageReference Include="MezzoRecovery.TapeDrive" Version="0.1.1-main.5" Condition=" '$(UseProjectReference)' != 'true' or !Exists($(MezzoRecoveryTapeDriveProject)) " />
+	</ItemGroup>
 
 </Project>

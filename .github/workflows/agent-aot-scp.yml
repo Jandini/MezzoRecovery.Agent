@@ -33,18 +33,6 @@ jobs:
           dotnet-version: "10.0.x"
           source-url: https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json
 
-      - name: Configure GitHub Packages NuGet source
-        run: |
-          set -e
-          SOURCE="https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json"
-          dotnet nuget remove source github 2>/dev/null || true
-          dotnet nuget add source "$SOURCE" \
-            --name github \
-            --username "${{ github.actor }}" \
-            --password "${{ secrets.NUGET_TOKEN }}" \
-            --store-password-in-clear-text \
-            --valid-authentication-types basic
-
       - name: Install GitVersion
         uses: gittools/actions/gitversion/setup@v3
         with:

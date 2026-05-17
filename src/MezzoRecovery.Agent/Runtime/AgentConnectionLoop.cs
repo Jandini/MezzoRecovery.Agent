@@ -26,7 +26,6 @@ public sealed class AgentConnectionLoop(
     public async Task RunAsync(CancellationToken ct)
     {
         using var _ = new ProcessLock(AgentPaths.DefaultLockPath);
-        using var http = new HttpClient();
 
         var cfg = await AgentConfigLoader.LoadAsync(configPath, ct);
         var baseUri = new Uri(cfg.ApiBaseUrl.TrimEnd('/') + "/");
@@ -37,7 +36,8 @@ public sealed class AgentConnectionLoop(
             return;
         }
 
-        var api = new AgentApiClient(http);
+        // Declare here; a fresh instance is created inside the loop on each cycle.
+        AgentApiClient api = null!;
         var version = Assembly.GetExecutingAssembly().GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
                      ?? Assembly.GetExecutingAssembly().GetName().Version?.ToString()
                      ?? "0.0.0";
@@ -51,6 +51,10 @@ public sealed class AgentConnectionLoop(
 
         while (!ct.IsCancellationRequested)
         {
+            // Fresh HttpClient per connection cycle prevents stale TCP connections
+            // from a previous server instance interfering with token requests.
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+            api = new AgentApiClient(http);
             HubConnection? hub = null;
             try
             {
@@ -70,28 +74,40 @@ public sealed class AgentConnectionLoop(
                     {
                         opts.PayloadSerializerOptions.TypeInfoResolver = AgentJsonContext.Default;
                     })
-                    .WithAutomaticReconnect(
-                        Enumerable.Range(0, 8)
-                            .Select(n => TimeSpan.FromSeconds(Math.Min(60, Math.Pow(2, n))))
-                            .ToArray())
+                    .WithAutomaticReconnect(new UnboundedRetryPolicy())
                     .Build();
+
+                var reconnectAttempts = 0;
 
                 hub.Reconnecting += error =>
                 {
-                    _logger.LogWarning(error, "SignalR reconnecting...");
+                    var attempt = Interlocked.Increment(ref reconnectAttempts);
+                    _logger.LogWarning(error, "SignalR reconnecting (attempt {Attempt}).", attempt);
                     return Task.CompletedTask;
                 };
                 hub.Reconnected += async connectionId =>
                 {
-                    _logger.LogInformation("SignalR reconnected. ConnectionId={Id}", connectionId);
-                    try
+                    Interlocked.Exchange(ref reconnectAttempts, 0);
+                    _logger.LogInformation("SignalR reconnected (ConnectionId={Id}). Re-registering with server.", connectionId);
+                    for (var attempt = 1; attempt <= 5; attempt++)
                     {
-                        await hub!.InvokeAsync("RegisterRuntime", hostname, os, arch, version, CancellationToken.None);
-                        await ReportDevicesAsync(hub!, CancellationToken.None);
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogError(ex, "RegisterRuntime after reconnect failed.");
+                        try
+                        {
+                            await hub!.InvokeAsync("RegisterRuntime", hostname, os, arch, version, CancellationToken.None);
+                            await ReportDevicesAsync(hub!, CancellationToken.None);
+                            _logger.LogInformation("Re-registration completed after reconnect.");
+                            return;
+                        }
+                        catch (Exception ex)
+                        {
+                            if (attempt == 5)
+                                _logger.LogError(ex, "Re-registration after reconnect failed after {Attempts} attempts - agent may appear offline.", attempt);
+                            else
+                            {
+                                _logger.LogWarning(ex, "Re-registration attempt {Attempt} failed, retrying in {Delay}s.", attempt, attempt * 2);
+                                await Task.Delay(TimeSpan.FromSeconds(attempt * 2), CancellationToken.None);
+                            }
+                        }
                     }
                 };
 
@@ -216,7 +232,19 @@ public sealed class AgentConnectionLoop(
             while (!ct.IsCancellationRequested)
             {
                 await Task.Delay(TimeSpan.FromSeconds(20), ct);
-                await connection.InvokeAsync("Heartbeat", hostname, os, arch, version, ct);
+                try
+                {
+                    await connection.InvokeAsync("Heartbeat", hostname, os, arch, version, ct);
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    // Connection is likely reconnecting - this is expected during server restarts.
+                    _logger.LogDebug(ex, "Heartbeat send failed (connection may be reconnecting).");
+                }
             }
         }
         catch (OperationCanceledException)
@@ -239,6 +267,18 @@ public sealed class AgentConnectionLoop(
         catch (OperationCanceledException)
         {
             // shutdown
+        }
+    }
+
+    // Retries reconnection indefinitely with capped exponential backoff.
+    // Prevents WithAutomaticReconnect from exhausting a fixed retry budget
+    // when the server takes more than a few minutes to restart.
+    private sealed class UnboundedRetryPolicy : IRetryPolicy
+    {
+        public TimeSpan? NextRetryDelay(RetryContext retryContext)
+        {
+            var seconds = Math.Min(60.0, Math.Pow(2, retryContext.PreviousRetryCount));
+            return TimeSpan.FromSeconds(seconds);
         }
     }
 }

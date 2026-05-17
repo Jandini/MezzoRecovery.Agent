@@ -1,5 +1,6 @@
 using System.CommandLine;
 using MezzoRecovery.Agent.Commands.Enroll;
+using MezzoRecovery.Agent.Commands.Restart;
 using MezzoRecovery.Agent.Commands.Run;
 using MezzoRecovery.Agent.Commands.Status;
 using MezzoRecovery.Agent.Commands.Update;
@@ -58,6 +59,14 @@ internal static class AgentCli
             return await handler.RunAsync(parseResult, ct).ConfigureAwait(false);
         });
         root.Subcommands.Add(update);
+
+        var restart = new Command("restart", "Restart the mra systemd service (requires root).");
+        restart.SetAction(async (parseResult, ct) =>
+        {
+            var handler = services.GetRequiredService<RestartCommandHandler>();
+            return await handler.RunAsync(parseResult, ct).ConfigureAwait(false);
+        });
+        root.Subcommands.Add(restart);
 
         return root;
     }

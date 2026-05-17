@@ -1,4 +1,5 @@
 using MezzoRecovery.Agent.Commands.Enroll;
+using MezzoRecovery.Agent.Commands.Restart;
 using MezzoRecovery.Agent.Commands.Run;
 using MezzoRecovery.Agent.Commands.Status;
 using MezzoRecovery.Agent.Commands.Update;
@@ -18,6 +19,7 @@ internal static class ServiceCollectionExtensions
         services
             .AddTransient<AgentMain>()
             .AddTransient<EnrollCommandHandler>()
+            .AddTransient<RestartCommandHandler>()
             .AddTransient<RunCommandHandler>()
             .AddTransient<StatusCommandHandler>()
             .AddTransient<UpdateCommandHandler>()

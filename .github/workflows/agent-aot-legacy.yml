@@ -4,6 +4,8 @@ name: Agent AOT publish and deploy (legacy / glibc 2.31)
 # container so the binary only requires glibc >= 2.31 (Ubuntu 20.04+).
 # The install script detects glibc at runtime and picks this binary when
 # glibc < 2.32 is present.
+#
+# Requires packages: read and GitHub Packages "Actions access" for MezzoRecovery.TapeDrive.
 
 on:
   push:
@@ -14,12 +16,14 @@ env:
   DOTNET_CLI_TELEMETRY_OPTOUT: 1
   DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 1
   DOTNET_NOLOGO: 1
+  NUGET_AUTH_TOKEN: ${{ github.token }}
 
 jobs:
   publish-legacy:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      packages: read
     steps:
       - uses: actions/checkout@v6
         with:
@@ -51,6 +55,9 @@ jobs:
         env:
           SEMVER: ${{ steps.gitversion.outputs.semVer }}
           INFOVER: ${{ steps.gitversion.outputs.informationalVersion }}
+          GITHUB_OWNER: ${{ github.repository_owner }}
+          GITHUB_ACTOR: ${{ github.actor }}
+          NUGET_AUTH_TOKEN: ${{ github.token }}
         run: |
           set -e
           mkdir -p "$GITHUB_WORKSPACE/out"
@@ -58,6 +65,9 @@ jobs:
             -v "$GITHUB_WORKSPACE:/workspace" \
             -e SEMVER \
             -e INFOVER \
+            -e NUGET_AUTH_TOKEN \
+            -e GITHUB_OWNER \
+            -e GITHUB_ACTOR \
             ubuntu:20.04 bash -c '
               set -e
               export DEBIAN_FRONTEND=noninteractive
@@ -68,7 +78,16 @@ jobs:
               bash /tmp/dotnet-install.sh --channel 10.0 --install-dir /usr/local/dotnet
               export PATH=/usr/local/dotnet:$PATH
               export DOTNET_ROOT=/usr/local/dotnet
+              SOURCE="https://nuget.pkg.github.com/${GITHUB_OWNER}/index.json"
+              dotnet nuget add source "$SOURCE" \
+                --name github \
+                --username "${GITHUB_ACTOR}" \
+                --password "${NUGET_AUTH_TOKEN}" \
+                --store-password-in-clear-text \
+                --valid-authentication-types basic
+              dotnet restore /workspace/src/MezzoRecovery.Agent/MezzoRecovery.Agent.csproj -r linux-x64
               dotnet publish /workspace/src/MezzoRecovery.Agent/MezzoRecovery.Agent.csproj \
+                --no-restore \
                 -c Release \
                 -r linux-x64 \
                 /p:DisableGitVersionTask=true \

@@ -10,7 +10,12 @@ public sealed class TapeDeviceDiscoveryService(
     ITapeDriveEnumerator enumerator,
     ILogger<TapeDeviceDiscoveryService> logger)
 {
-    public IReadOnlyList<AgentTapeDeviceDto> DiscoverDevices()
+    /// <summary>
+    /// Enumerates tape drives and probes status. Devices whose stable key is in
+    /// <paramref name="busyStableKeys"/> have their probe skipped and are reported
+    /// as Busy / BUSY so the sweep never contends with an in-flight operation.
+    /// </summary>
+    public IReadOnlyList<AgentTapeDeviceDto> DiscoverDevices(IReadOnlySet<string>? busyStableKeys = null)
     {
         logger.LogInformation("Tape device discovery started.");
 
@@ -36,7 +41,18 @@ public sealed class TapeDeviceDiscoveryService(
                 var stableKey = BuildStableKey(devicePath, nonRewindingPath);
                 var probePath = nonRewindingPath ?? devicePath;
                 var accessible = CheckAccessible(devicePath);
-                var (status, mtStatusLabels) = ProbeTapeStatus(probePath, accessible);
+
+                AgentTapeDeviceStatus status;
+                string? mtStatusLabels;
+                if (busyStableKeys is not null && busyStableKeys.Contains(stableKey))
+                {
+                    status = AgentTapeDeviceStatus.Busy;
+                    mtStatusLabels = "BUSY";
+                }
+                else
+                {
+                    (status, mtStatusLabels) = ProbeTapeStatus(probePath, accessible);
+                }
 
                 result.Add(new AgentTapeDeviceDto
                 {
@@ -67,6 +83,18 @@ public sealed class TapeDeviceDiscoveryService(
             logger.LogError(ex, "Tape device discovery failed.");
             return [];
         }
+    }
+
+    /// <summary>
+    /// Lightweight, non-blocking status probe used by the status poller. Same
+    /// classification as the discovery sweep but expressed as a single call so
+    /// the poller never re-enumerates SCSI devices for the live tick.
+    /// </summary>
+    public (AgentTapeDeviceStatus Status, string? MtStatusLabels) ProbeStatus(AgentTapeDeviceDto device)
+    {
+        var probePath = device.NonRewindingDevicePath ?? device.LinuxDevicePath;
+        var accessible = CheckAccessible(device.LinuxDevicePath);
+        return ProbeTapeStatus(probePath, accessible);
     }
 
     private static (AgentTapeDeviceStatus Status, string? MtStatusLabels) ProbeTapeStatus(string probePath, bool accessible)
@@ -113,7 +141,7 @@ public sealed class TapeDeviceDiscoveryService(
         }
     }
 
-    private bool CheckAccessible(string devicePath)
+    public bool CheckAccessible(string devicePath)
     {
         try
         {

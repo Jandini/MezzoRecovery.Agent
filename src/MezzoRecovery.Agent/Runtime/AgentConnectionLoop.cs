@@ -16,7 +16,8 @@ namespace MezzoRecovery.Agent.Runtime;
 public sealed class AgentConnectionLoop(
     string configPath,
     string credentialPath,
-    TapeDeviceDiscoveryService deviceDiscovery,
+    DeviceReportPublisher reportPublisher,
+    TapeDeviceStatusPoller statusPoller,
     DeviceDiscoveryOptions discoveryOptions,
     IScsiHostEnumerator scsiEnumerator,
     TapeReadRunner tapeReadRunner,
@@ -95,7 +96,7 @@ public sealed class AgentConnectionLoop(
                         try
                         {
                             await hub!.InvokeAsync("RegisterRuntime", hostname, os, arch, version, CancellationToken.None);
-                            await ReportDevicesAsync(hub!, CancellationToken.None);
+                            await reportPublisher.PublishFullDiscoveryAsync(hub!, CancellationToken.None);
                             await ReportActiveOperationsAsync(hub!, CancellationToken.None);
                             _logger.LogInformation("Re-registration completed after reconnect.");
                             return;
@@ -118,7 +119,7 @@ public sealed class AgentConnectionLoop(
                     _logger.LogInformation("RefreshTapeDevices command received from server.");
                     try
                     {
-                        await ReportDevicesAsync(hub!, CancellationToken.None);
+                        await reportPublisher.PublishFullDiscoveryAsync(hub!, CancellationToken.None);
                     }
                     catch (Exception ex)
                     {
@@ -133,7 +134,7 @@ public sealed class AgentConnectionLoop(
                     {
                         scsiEnumerator.ScanScsiHosts();
                         _logger.LogInformation("SCSI host scan completed. Re-discovering devices.");
-                        await ReportDevicesAsync(hub!, CancellationToken.None);
+                        await reportPublisher.PublishFullDiscoveryAsync(hub!, CancellationToken.None);
                     }
                     catch (Exception ex)
                     {
@@ -176,13 +177,16 @@ public sealed class AgentConnectionLoop(
                 failureBackoff = TimeSpan.FromSeconds(2);
                 _logger.LogInformation("Connected to MezzoRecovery (agent {AgentId}).", cred.AgentId);
                 await hub.InvokeAsync("RegisterRuntime", hostname, os, arch, version, ct);
-                await ReportDevicesAsync(hub, ct);
+                await reportPublisher.PublishFullDiscoveryAsync(hub, ct);
                 await ReportActiveOperationsAsync(hub, ct);
 
                 using var heartbeatCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 var heartbeatTask = HeartbeatLoopAsync(hub, hostname, os, arch, version, heartbeatCts.Token);
                 var deviceRefreshTask = discoveryOptions.Enabled
                     ? DeviceRefreshLoopAsync(hub, heartbeatCts.Token)
+                    : Task.CompletedTask;
+                var statusPollerTask = discoveryOptions.Enabled
+                    ? statusPoller.RunAsync(hub, heartbeatCts.Token)
                     : Task.CompletedTask;
 
                 await disconnectTcs.Task.WaitAsync(ct);
@@ -191,6 +195,8 @@ public sealed class AgentConnectionLoop(
                 try { await heartbeatTask; }
                 catch (OperationCanceledException) { }
                 try { await deviceRefreshTask; }
+                catch (OperationCanceledException) { }
+                try { await statusPollerTask; }
                 catch (OperationCanceledException) { }
 
                 await hub.StopAsync(CancellationToken.None);
@@ -217,31 +223,6 @@ public sealed class AgentConnectionLoop(
             {
                 if (hub is not null)
                     await hub.DisposeAsync();
-            }
-        }
-    }
-
-    private async Task ReportDevicesAsync(HubConnection hub, CancellationToken ct)
-    {
-        if (!discoveryOptions.Enabled)
-            return;
-
-        try
-        {
-            var devices = deviceDiscovery.DiscoverDevices();
-            await hub.InvokeAsync("ReportTapeDevices", devices.ToArray(), ct);
-            _logger.LogInformation("Reported {Count} tape device(s) to server.", devices.Count);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to report tape devices to server.");
-            try
-            {
-                await hub.InvokeAsync("ReportTapeDeviceDiscoveryFailed", ex.Message, ct);
-            }
-            catch
-            {
-                // ignore secondary failure
             }
         }
     }
@@ -300,7 +281,7 @@ public sealed class AgentConnectionLoop(
             while (!ct.IsCancellationRequested)
             {
                 await Task.Delay(interval, ct);
-                await ReportDevicesAsync(connection, ct);
+                await reportPublisher.PublishFullDiscoveryAsync(connection, ct);
             }
         }
         catch (OperationCanceledException)

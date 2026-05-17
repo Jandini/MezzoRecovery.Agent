@@ -30,14 +30,19 @@ internal static class ServiceCollectionExtensions
             .AddSingleton<DeviceDiscoveryOptions>()
             .AddSingleton<TapeOperationOptions>()
             .AddSingleton<IOptions<TapeOperationOptions>>(sp => Options.Create(sp.GetRequiredService<TapeOperationOptions>()))
+            .AddSingleton<TapeDeviceStatusOptions>()
+            .AddSingleton<IOptions<TapeDeviceStatusOptions>>(sp => Options.Create(sp.GetRequiredService<TapeDeviceStatusOptions>()))
             .AddSingleton<ITapeDriveEnumerator, SysfsTapeDriveEnumerator>()
             .AddSingleton<IScsiHostEnumerator, SysfsScsiHostScanner>()
             .AddSingleton<TapeDeviceLockManager>()
             .AddSingleton<TapeOperationStateStore>()
             .AddSingleton<TapeOperationReporter>()
             .AddSingleton<ITapeVerifyService, TapeVerifyService>()
+            .AddSingleton<AgentDeviceStateStore>()
+            .AddSingleton<TapeDeviceDiscoveryService>()
+            .AddSingleton<DeviceReportPublisher>()
+            .AddSingleton<TapeDeviceStatusPoller>()
             .AddSingleton<TapeReadRunner>()
             .AddSingleton<TapeMediaControlService>()
-            .AddSingleton<StopOperationHandler>()
-            .AddTransient<TapeDeviceDiscoveryService>();
+            .AddSingleton<StopOperationHandler>();
 }

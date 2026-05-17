@@ -1,5 +1,6 @@
 using MezzoRecovery.Agent.Configuration;
 using MezzoRecovery.Agent.Contracts;
+using MezzoRecovery.Agent.Devices;
 using MezzoRecovery.Tape.Models;
 using MezzoRecovery.Tape.Services;
 using Microsoft.AspNetCore.SignalR.Client;
@@ -17,6 +18,8 @@ public sealed class TapeReadRunner(
     TapeDeviceLockManager locks,
     TapeOperationStateStore state,
     TapeOperationReporter reporter,
+    AgentDeviceStateStore deviceStore,
+    DeviceReportPublisher publisher,
     IOptions<TapeOperationOptions> options,
     ILogger<TapeReadRunner> logger)
 {
@@ -57,6 +60,7 @@ public sealed class TapeReadRunner(
         var cts = new CancellationTokenSource();
         var op = new TapeOperationStateStore.RunningOperation(
             command.TapeDeviceId,
+            command.StableDeviceKey,
             TapeOperationTypes.Read,
             command.RequestedByUserId,
             startedAt,
@@ -73,6 +77,11 @@ public sealed class TapeReadRunner(
                 CancellationToken.None);
             return;
         }
+
+        // Flip the device's live status to Busy so the UI badge follows the operation,
+        // then push the change so it lands without waiting for the next poll tick.
+        if (deviceStore.UpdateStatus(command.StableDeviceKey, AgentTapeDeviceStatus.Busy, "BUSY"))
+            await publisher.PublishCurrentAsync(hub, CancellationToken.None);
 
         try
         {
@@ -191,6 +200,17 @@ public sealed class TapeReadRunner(
         {
             state.Remove(command.TapeDeviceId);
             cts.Dispose();
+
+            // Operation is over -- run a full discovery so the UI converges immediately
+            // even if a single TapeDeviceOperationCleared frame is dropped in transit.
+            try
+            {
+                await publisher.PublishFullDiscoveryAsync(hub, CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Post-operation device report failed for device {DeviceId}.", command.TapeDeviceId);
+            }
         }
     }
 

@@ -1,4 +1,5 @@
 using MezzoRecovery.Agent.Contracts;
+using MezzoRecovery.Agent.Devices;
 using MezzoRecovery.TapeDrive.Linux;
 using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.Extensions.Logging;
@@ -13,6 +14,8 @@ public sealed class TapeMediaControlService(
     TapeDeviceLockManager locks,
     TapeOperationStateStore state,
     TapeOperationReporter reporter,
+    AgentDeviceStateStore deviceStore,
+    DeviceReportPublisher publisher,
     ILogger<TapeMediaControlService> logger)
 {
     public void Execute(HubConnection hub, ExecuteTapeMediaActionCommand command) =>
@@ -41,6 +44,7 @@ public sealed class TapeMediaControlService(
         var cts = new CancellationTokenSource();
         var op = new TapeOperationStateStore.RunningOperation(
             command.TapeDeviceId,
+            command.StableDeviceKey,
             command.OperationType,
             command.RequestedByUserId,
             startedAt,
@@ -54,6 +58,9 @@ public sealed class TapeMediaControlService(
                 "DeviceBusy", "Race: another operation registered first."), CancellationToken.None);
             return;
         }
+
+        if (deviceStore.UpdateStatus(command.StableDeviceKey, AgentTapeDeviceStatus.Busy, "BUSY"))
+            await publisher.PublishCurrentAsync(hub, CancellationToken.None);
 
         try
         {
@@ -115,6 +122,15 @@ public sealed class TapeMediaControlService(
         {
             state.Remove(command.TapeDeviceId);
             cts.Dispose();
+
+            try
+            {
+                await publisher.PublishFullDiscoveryAsync(hub, CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Post-operation device report failed for device {DeviceId}.", command.TapeDeviceId);
+            }
         }
     }
 

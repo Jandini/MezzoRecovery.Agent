@@ -10,7 +10,8 @@ namespace MezzoRecovery.Agent.Commands.Run;
 
 internal sealed class RunCommandHandler(
     ILoggerFactory loggerFactory,
-    TapeDeviceDiscoveryService deviceDiscovery,
+    DeviceReportPublisher reportPublisher,
+    TapeDeviceStatusPoller statusPoller,
     DeviceDiscoveryOptions discoveryOptions,
     IScsiHostEnumerator scsiEnumerator,
     TapeReadRunner tapeReadRunner,
@@ -42,7 +43,8 @@ internal sealed class RunCommandHandler(
         var loop = new AgentConnectionLoop(
             configPath,
             credentialPath,
-            deviceDiscovery,
+            reportPublisher,
+            statusPoller,
             discoveryOptions,
             scsiEnumerator,
             tapeReadRunner,

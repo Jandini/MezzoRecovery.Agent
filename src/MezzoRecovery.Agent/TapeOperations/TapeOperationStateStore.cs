@@ -15,6 +15,23 @@ public sealed class TapeOperationStateStore
     public RunningOperation? Get(Guid tapeDeviceId) =>
         _byDevice.TryGetValue(tapeDeviceId, out var op) ? op : null;
 
+    public bool IsDeviceBusyByStableKey(string stableDeviceKey)
+    {
+        foreach (var op in _byDevice.Values)
+            if (string.Equals(op.StableDeviceKey, stableDeviceKey, StringComparison.Ordinal))
+                return true;
+        return false;
+    }
+
+    public IReadOnlySet<string> SnapshotBusyStableKeys()
+    {
+        var set = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var op in _byDevice.Values)
+            if (!string.IsNullOrEmpty(op.StableDeviceKey))
+                set.Add(op.StableDeviceKey);
+        return set;
+    }
+
     public bool RequestStop(Guid tapeDeviceId)
     {
         if (!_byDevice.TryGetValue(tapeDeviceId, out var op))
@@ -46,6 +63,7 @@ public sealed class TapeOperationStateStore
 
     public sealed class RunningOperation(
         Guid tapeDeviceId,
+        string stableDeviceKey,
         string operationType,
         Guid requestedByUserId,
         DateTimeOffset startedAt,
@@ -54,6 +72,7 @@ public sealed class TapeOperationStateStore
         CancellationTokenSource cts)
     {
         public Guid TapeDeviceId { get; } = tapeDeviceId;
+        public string StableDeviceKey { get; } = stableDeviceKey;
         public string OperationType { get; } = operationType;
         public Guid RequestedByUserId { get; } = requestedByUserId;
         public DateTimeOffset StartedAt { get; } = startedAt;

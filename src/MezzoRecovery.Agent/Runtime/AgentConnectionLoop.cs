@@ -4,6 +4,7 @@ using MezzoRecovery.Agent.Configuration;
 using MezzoRecovery.Agent.Contracts;
 using MezzoRecovery.Agent.Devices;
 using MezzoRecovery.Agent.Identity;
+using MezzoRecovery.TapeDrive.Abstractions;
 using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -17,6 +18,7 @@ public sealed class AgentConnectionLoop(
     string credentialPath,
     TapeDeviceDiscoveryService deviceDiscovery,
     DeviceDiscoveryOptions discoveryOptions,
+    IScsiHostEnumerator scsiEnumerator,
     ILogger? logger = null)
 {
     private readonly ILogger _logger = logger ?? NullLogger.Instance;
@@ -103,6 +105,21 @@ public sealed class AgentConnectionLoop(
                     catch (Exception ex)
                     {
                         _logger.LogError(ex, "Device refresh on demand failed.");
+                    }
+                });
+
+                hub.On("RescanScsi", async () =>
+                {
+                    _logger.LogInformation("RescanScsi command received from server.");
+                    try
+                    {
+                        scsiEnumerator.ScanScsiHosts();
+                        _logger.LogInformation("SCSI host scan completed. Re-discovering devices.");
+                        await ReportDevicesAsync(hub!, CancellationToken.None);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "SCSI rescan failed.");
                     }
                 });
 

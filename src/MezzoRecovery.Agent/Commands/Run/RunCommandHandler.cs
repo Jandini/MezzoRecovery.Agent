@@ -2,6 +2,7 @@ using System.CommandLine;
 using MezzoRecovery.Agent.Configuration;
 using MezzoRecovery.Agent.Devices;
 using MezzoRecovery.Agent.Runtime;
+using MezzoRecovery.TapeDrive.Abstractions;
 using Microsoft.Extensions.Logging;
 
 namespace MezzoRecovery.Agent.Commands.Run;
@@ -9,7 +10,8 @@ namespace MezzoRecovery.Agent.Commands.Run;
 internal sealed class RunCommandHandler(
     ILoggerFactory loggerFactory,
     TapeDeviceDiscoveryService deviceDiscovery,
-    DeviceDiscoveryOptions discoveryOptions)
+    DeviceDiscoveryOptions discoveryOptions,
+    IScsiHostEnumerator scsiEnumerator)
 {
     public static readonly Option<string?> Config = new("--config")
     {
@@ -37,6 +39,7 @@ internal sealed class RunCommandHandler(
             credentialPath,
             deviceDiscovery,
             discoveryOptions,
+            scsiEnumerator,
             loggerFactory.CreateLogger<AgentConnectionLoop>());
         await loop.RunAsync(ct);
         return 0;

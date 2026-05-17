@@ -7,6 +7,7 @@ using MezzoRecovery.Agent.Configuration;
 using MezzoRecovery.Agent.Devices;
 using MezzoRecovery.TapeDrive.Abstractions;
 using MezzoRecovery.TapeDrive.Linux.Discovery;
+using MezzoRecovery.TapeDrive.Linux.Scsi;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace MezzoRecovery.Agent.Extensions;
@@ -23,5 +24,6 @@ internal static class ServiceCollectionExtensions
             .AddTransient<VersionCommandHandler>()
             .AddSingleton<DeviceDiscoveryOptions>()
             .AddSingleton<ITapeDriveEnumerator, SysfsTapeDriveEnumerator>()
+            .AddSingleton<IScsiHostEnumerator, SysfsScsiHostScanner>()
             .AddTransient<TapeDeviceDiscoveryService>();
 }

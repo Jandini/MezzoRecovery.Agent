@@ -64,6 +64,9 @@ public sealed class AgentTapeDeviceDto
     [JsonPropertyName("revision")]
     public string? Revision { get; set; }
 
+    [JsonPropertyName("mtStatusLabels")]
+    public string? MtStatusLabels { get; set; }
+
     [JsonPropertyName("serialNumber")]
     public string? SerialNumber { get; set; }
 

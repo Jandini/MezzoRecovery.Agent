@@ -1,5 +1,7 @@
 using MezzoRecovery.Agent.Contracts;
 using MezzoRecovery.TapeDrive.Abstractions;
+using MezzoRecovery.TapeDrive.Linux;
+using MezzoRecovery.TapeDrive.Models;
 using Microsoft.Extensions.Logging;
 
 namespace MezzoRecovery.Agent.Devices;
@@ -32,9 +34,9 @@ public sealed class TapeDeviceDiscoveryService(
                 var rewindingPath = rewinding is not null ? "/dev/" + rewinding : null;
 
                 var stableKey = BuildStableKey(devicePath, nonRewindingPath);
-
+                var probePath = nonRewindingPath ?? devicePath;
                 var accessible = CheckAccessible(devicePath);
-                var status = accessible ? AgentTapeDeviceStatus.Present : AgentTapeDeviceStatus.Unavailable;
+                var (status, mtStatusLabels) = ProbeTapeStatus(probePath, accessible);
 
                 result.Add(new AgentTapeDeviceDto
                 {
@@ -46,6 +48,7 @@ public sealed class TapeDeviceDiscoveryService(
                     Model = NullIfEmpty(drive.Model),
                     Revision = NullIfEmpty(drive.Revision),
                     Status = status,
+                    MtStatusLabels = mtStatusLabels,
                     IsPresent = true,
                     IsAccessible = accessible,
                 });
@@ -63,6 +66,50 @@ public sealed class TapeDeviceDiscoveryService(
         {
             logger.LogError(ex, "Tape device discovery failed.");
             return [];
+        }
+    }
+
+    private static (AgentTapeDeviceStatus Status, string? MtStatusLabels) ProbeTapeStatus(string probePath, bool accessible)
+    {
+        if (!accessible)
+            return (AgentTapeDeviceStatus.Unavailable, null);
+
+        if (!OperatingSystem.IsLinux())
+            return (AgentTapeDeviceStatus.Present, null);
+
+        try
+        {
+            var probe = LinuxTapeDriveStatus.Probe(probePath);
+            if (probe.Ok)
+            {
+                var labels = NullIfEmpty(TapeGstatLabels.FormatShort(probe.Status.GstatFlags));
+                var flags = probe.Status.GstatFlags;
+                if (flags.HasFlag(TapeGstatFlags.DoorOpen) || !flags.HasFlag(TapeGstatFlags.Online))
+                    return (AgentTapeDeviceStatus.NoMedia, labels);
+
+                return (AgentTapeDeviceStatus.Ready, labels);
+            }
+
+            var mtLabels = probe.FailureCategory switch
+            {
+                TapeDriveMtProbeFailureCategory.Busy => "BUSY",
+                TapeDriveMtProbeFailureCategory.NotReady => "NOT_READY",
+                _ => null,
+            };
+
+            var status = probe.FailureCategory switch
+            {
+                TapeDriveMtProbeFailureCategory.Busy => AgentTapeDeviceStatus.Busy,
+                TapeDriveMtProbeFailureCategory.NotReady => AgentTapeDeviceStatus.NoMedia,
+                _ when probe.Errno is 13 or 1 => AgentTapeDeviceStatus.PermissionDenied,
+                _ => AgentTapeDeviceStatus.Present,
+            };
+
+            return (status, mtLabels);
+        }
+        catch
+        {
+            return (AgentTapeDeviceStatus.Present, null);
         }
     }
 

@@ -1,7 +1,10 @@
 using System.Collections.Concurrent;
 
-namespace MezzoRecovery.Agent.TapeJobs;
+namespace MezzoRecovery.Agent.TapeOperations;
 
+/// <summary>
+/// Per-device serialisation. Exactly one operation may hold a given stable device key at a time.
+/// </summary>
 public sealed class TapeDeviceLockManager
 {
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _locks = new(StringComparer.Ordinal);

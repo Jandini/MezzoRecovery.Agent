@@ -6,7 +6,7 @@ using MezzoRecovery.Agent.Commands.Update;
 using MezzoRecovery.Agent.Commands.Version;
 using MezzoRecovery.Agent.Configuration;
 using MezzoRecovery.Agent.Devices;
-using MezzoRecovery.Agent.TapeJobs;
+using MezzoRecovery.Agent.TapeOperations;
 using MezzoRecovery.Tape.Services;
 using MezzoRecovery.TapeDrive.Abstractions;
 using MezzoRecovery.TapeDrive.Linux.Discovery;
@@ -28,15 +28,16 @@ internal static class ServiceCollectionExtensions
             .AddTransient<UpdateCommandHandler>()
             .AddTransient<VersionCommandHandler>()
             .AddSingleton<DeviceDiscoveryOptions>()
-            .AddSingleton<TapeJobOptions>()
-            .AddSingleton<IOptions<TapeJobOptions>>(sp => Options.Create(sp.GetRequiredService<TapeJobOptions>()))
+            .AddSingleton<TapeOperationOptions>()
+            .AddSingleton<IOptions<TapeOperationOptions>>(sp => Options.Create(sp.GetRequiredService<TapeOperationOptions>()))
             .AddSingleton<ITapeDriveEnumerator, SysfsTapeDriveEnumerator>()
             .AddSingleton<IScsiHostEnumerator, SysfsScsiHostScanner>()
             .AddSingleton<TapeDeviceLockManager>()
-            .AddSingleton<AgentJobStateStore>()
-            .AddSingleton<TapeJobReporter>()
+            .AddSingleton<TapeOperationStateStore>()
+            .AddSingleton<TapeOperationReporter>()
             .AddSingleton<ITapeVerifyService, TapeVerifyService>()
-            .AddSingleton<TapeJobRunner>()
+            .AddSingleton<TapeReadRunner>()
             .AddSingleton<TapeMediaControlService>()
+            .AddSingleton<StopOperationHandler>()
             .AddTransient<TapeDeviceDiscoveryService>();
 }

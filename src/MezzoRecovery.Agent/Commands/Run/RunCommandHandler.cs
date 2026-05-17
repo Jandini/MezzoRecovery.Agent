@@ -2,7 +2,7 @@ using System.CommandLine;
 using MezzoRecovery.Agent.Configuration;
 using MezzoRecovery.Agent.Devices;
 using MezzoRecovery.Agent.Runtime;
-using MezzoRecovery.Agent.TapeJobs;
+using MezzoRecovery.Agent.TapeOperations;
 using MezzoRecovery.TapeDrive.Abstractions;
 using Microsoft.Extensions.Logging;
 
@@ -13,9 +13,10 @@ internal sealed class RunCommandHandler(
     TapeDeviceDiscoveryService deviceDiscovery,
     DeviceDiscoveryOptions discoveryOptions,
     IScsiHostEnumerator scsiEnumerator,
-    TapeJobRunner tapeJobRunner,
+    TapeReadRunner tapeReadRunner,
     TapeMediaControlService tapeMediaControl,
-    AgentJobStateStore jobState)
+    StopOperationHandler stopHandler,
+    TapeOperationStateStore operationState)
 {
     public static readonly Option<string?> Config = new("--config")
     {
@@ -44,9 +45,10 @@ internal sealed class RunCommandHandler(
             deviceDiscovery,
             discoveryOptions,
             scsiEnumerator,
-            tapeJobRunner,
+            tapeReadRunner,
             tapeMediaControl,
-            jobState,
+            stopHandler,
+            operationState,
             loggerFactory.CreateLogger<AgentConnectionLoop>());
         await loop.RunAsync(ct);
         return 0;

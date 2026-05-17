@@ -4,13 +4,12 @@ using MezzoRecovery.Agent.Configuration;
 using MezzoRecovery.Agent.Contracts;
 using MezzoRecovery.Agent.Devices;
 using MezzoRecovery.Agent.Identity;
-using MezzoRecovery.Agent.TapeJobs;
+using MezzoRecovery.Agent.TapeOperations;
 using MezzoRecovery.TapeDrive.Abstractions;
 using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
-using Microsoft.Extensions.Options;
 
 namespace MezzoRecovery.Agent.Runtime;
 
@@ -20,9 +19,10 @@ public sealed class AgentConnectionLoop(
     TapeDeviceDiscoveryService deviceDiscovery,
     DeviceDiscoveryOptions discoveryOptions,
     IScsiHostEnumerator scsiEnumerator,
-    TapeJobRunner tapeJobRunner,
+    TapeReadRunner tapeReadRunner,
     TapeMediaControlService tapeMediaControl,
-    AgentJobStateStore jobState,
+    StopOperationHandler stopHandler,
+    TapeOperationStateStore operationState,
     ILogger? logger = null)
 {
     private readonly ILogger _logger = logger ?? NullLogger.Instance;
@@ -40,7 +40,6 @@ public sealed class AgentConnectionLoop(
             return;
         }
 
-        // Declare here; a fresh instance is created inside the loop on each cycle.
         AgentApiClient api = null!;
         var version = Assembly.GetExecutingAssembly().GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
                      ?? Assembly.GetExecutingAssembly().GetName().Version?.ToString()
@@ -55,8 +54,6 @@ public sealed class AgentConnectionLoop(
 
         while (!ct.IsCancellationRequested)
         {
-            // Fresh HttpClient per connection cycle prevents stale TCP connections
-            // from a previous server instance interfering with token requests.
             using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
             api = new AgentApiClient(http);
             HubConnection? hub = null;
@@ -99,7 +96,7 @@ public sealed class AgentConnectionLoop(
                         {
                             await hub!.InvokeAsync("RegisterRuntime", hostname, os, arch, version, CancellationToken.None);
                             await ReportDevicesAsync(hub!, CancellationToken.None);
-                            await ReportActiveJobsAsync(hub!, CancellationToken.None);
+                            await ReportActiveOperationsAsync(hub!, CancellationToken.None);
                             _logger.LogInformation("Re-registration completed after reconnect.");
                             return;
                         }
@@ -144,17 +141,17 @@ public sealed class AgentConnectionLoop(
                     }
                 });
 
-                hub.On<StartTapeReadJobCommand>("StartTapeReadJob", command =>
+                hub.On<StartTapeReadCommand>("StartTapeRead", command =>
                 {
-                    _logger.LogInformation("StartTapeReadJob received for job {JobId}.", command.JobId);
-                    tapeJobRunner.Start(hub!, command);
+                    _logger.LogInformation("StartTapeRead received for device {DeviceId}.", command.TapeDeviceId);
+                    tapeReadRunner.Start(hub!, command);
                     return Task.CompletedTask;
                 });
 
-                hub.On<CancelTapeJobCommand>("CancelTapeJob", command =>
+                hub.On<StopTapeOperationCommand>("StopTapeOperation", command =>
                 {
-                    _logger.LogInformation("CancelTapeJob received for job {JobId}.", command.JobId);
-                    tapeJobRunner.Cancel(command);
+                    _logger.LogInformation("StopTapeOperation received for device {DeviceId}.", command.TapeDeviceId);
+                    stopHandler.RequestStop(command);
                     return Task.CompletedTask;
                 });
 
@@ -162,9 +159,9 @@ public sealed class AgentConnectionLoop(
                 {
                     _logger.LogInformation(
                         "ExecuteTapeMediaAction {Action} received for device {DeviceId}.",
-                        command.Action,
+                        command.OperationType,
                         command.TapeDeviceId);
-                    Task.Run(() => tapeMediaControl.ExecuteAsync(hub!, command, CancellationToken.None));
+                    tapeMediaControl.Execute(hub!, command);
                     return Task.CompletedTask;
                 });
 
@@ -180,7 +177,7 @@ public sealed class AgentConnectionLoop(
                 _logger.LogInformation("Connected to MezzoRecovery (agent {AgentId}).", cred.AgentId);
                 await hub.InvokeAsync("RegisterRuntime", hostname, os, arch, version, ct);
                 await ReportDevicesAsync(hub, ct);
-                await ReportActiveJobsAsync(hub, ct);
+                await ReportActiveOperationsAsync(hub, ct);
 
                 using var heartbeatCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 var heartbeatTask = HeartbeatLoopAsync(hub, hostname, os, arch, version, heartbeatCts.Token);
@@ -272,7 +269,6 @@ public sealed class AgentConnectionLoop(
                 }
                 catch (Exception ex)
                 {
-                    // Connection is likely reconnecting - this is expected during server restarts.
                     _logger.LogDebug(ex, "Heartbeat send failed (connection may be reconnecting).");
                 }
             }
@@ -283,16 +279,16 @@ public sealed class AgentConnectionLoop(
         }
     }
 
-    private async Task ReportActiveJobsAsync(HubConnection hub, CancellationToken ct)
+    private async Task ReportActiveOperationsAsync(HubConnection hub, CancellationToken ct)
     {
         try
         {
-            var snapshots = jobState.BuildSnapshots();
-            await hub.InvokeAsync("ReportActiveJobs", snapshots, ct);
+            var snapshots = operationState.BuildSnapshots();
+            await hub.InvokeAsync("ReportActiveOperations", snapshots, ct);
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to report active tape jobs.");
+            _logger.LogWarning(ex, "Failed to report active tape operations.");
         }
     }
 
@@ -313,9 +309,6 @@ public sealed class AgentConnectionLoop(
         }
     }
 
-    // Retries reconnection indefinitely with capped exponential backoff.
-    // Prevents WithAutomaticReconnect from exhausting a fixed retry budget
-    // when the server takes more than a few minutes to restart.
     private sealed class UnboundedRetryPolicy : IRetryPolicy
     {
         public TimeSpan? NextRetryDelay(RetryContext retryContext)

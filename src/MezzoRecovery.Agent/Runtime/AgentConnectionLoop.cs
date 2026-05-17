@@ -4,6 +4,7 @@ using MezzoRecovery.Agent.Configuration;
 using MezzoRecovery.Agent.Contracts;
 using MezzoRecovery.Agent.Devices;
 using MezzoRecovery.Agent.Identity;
+using MezzoRecovery.Agent.TapeJobs;
 using MezzoRecovery.TapeDrive.Abstractions;
 using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.Extensions.DependencyInjection;
@@ -19,6 +20,9 @@ public sealed class AgentConnectionLoop(
     TapeDeviceDiscoveryService deviceDiscovery,
     DeviceDiscoveryOptions discoveryOptions,
     IScsiHostEnumerator scsiEnumerator,
+    TapeJobRunner tapeJobRunner,
+    TapeMediaControlService tapeMediaControl,
+    AgentJobStateStore jobState,
     ILogger? logger = null)
 {
     private readonly ILogger _logger = logger ?? NullLogger.Instance;
@@ -95,6 +99,7 @@ public sealed class AgentConnectionLoop(
                         {
                             await hub!.InvokeAsync("RegisterRuntime", hostname, os, arch, version, CancellationToken.None);
                             await ReportDevicesAsync(hub!, CancellationToken.None);
+                            await ReportActiveJobsAsync(hub!, CancellationToken.None);
                             _logger.LogInformation("Re-registration completed after reconnect.");
                             return;
                         }
@@ -139,6 +144,30 @@ public sealed class AgentConnectionLoop(
                     }
                 });
 
+                hub.On<StartTapeReadJobCommand>("StartTapeReadJob", command =>
+                {
+                    _logger.LogInformation("StartTapeReadJob received for job {JobId}.", command.JobId);
+                    tapeJobRunner.Start(hub!, command);
+                    return Task.CompletedTask;
+                });
+
+                hub.On<CancelTapeJobCommand>("CancelTapeJob", command =>
+                {
+                    _logger.LogInformation("CancelTapeJob received for job {JobId}.", command.JobId);
+                    tapeJobRunner.Cancel(command);
+                    return Task.CompletedTask;
+                });
+
+                hub.On<ExecuteTapeMediaActionCommand>("ExecuteTapeMediaAction", command =>
+                {
+                    _logger.LogInformation(
+                        "ExecuteTapeMediaAction {Action} received for device {DeviceId}.",
+                        command.Action,
+                        command.TapeDeviceId);
+                    Task.Run(() => tapeMediaControl.ExecuteAsync(hub!, command, CancellationToken.None));
+                    return Task.CompletedTask;
+                });
+
                 var disconnectTcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
                 hub.Closed += _ =>
                 {
@@ -151,6 +180,7 @@ public sealed class AgentConnectionLoop(
                 _logger.LogInformation("Connected to MezzoRecovery (agent {AgentId}).", cred.AgentId);
                 await hub.InvokeAsync("RegisterRuntime", hostname, os, arch, version, ct);
                 await ReportDevicesAsync(hub, ct);
+                await ReportActiveJobsAsync(hub, ct);
 
                 using var heartbeatCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 var heartbeatTask = HeartbeatLoopAsync(hub, hostname, os, arch, version, heartbeatCts.Token);
@@ -250,6 +280,19 @@ public sealed class AgentConnectionLoop(
         catch (OperationCanceledException)
         {
             // shutdown
+        }
+    }
+
+    private async Task ReportActiveJobsAsync(HubConnection hub, CancellationToken ct)
+    {
+        try
+        {
+            var snapshots = jobState.BuildSnapshots();
+            await hub.InvokeAsync("ReportActiveJobs", snapshots, ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to report active tape jobs.");
         }
     }
 

@@ -5,7 +5,8 @@ name: Agent AOT publish and deploy (legacy / glibc 2.31)
 # The install script detects glibc at runtime and picks this binary when
 # glibc < 2.32 is present.
 #
-# Requires packages: read and GitHub Packages "Actions access" for MezzoRecovery.TapeDrive.
+# Secrets (Settings → Secrets and variables → Actions):
+#   NUGET_TOKEN - PAT with read:packages (MezzoRecovery.TapeDrive from GitHub Packages)
 
 on:
   push:
@@ -16,7 +17,7 @@ env:
   DOTNET_CLI_TELEMETRY_OPTOUT: 1
   DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 1
   DOTNET_NOLOGO: 1
-  NUGET_AUTH_TOKEN: ${{ github.token }}
+  NUGET_AUTH_TOKEN: ${{ secrets.NUGET_TOKEN }}
 
 jobs:
   publish-legacy:
@@ -57,7 +58,7 @@ jobs:
           INFOVER: ${{ steps.gitversion.outputs.informationalVersion }}
           GITHUB_OWNER: ${{ github.repository_owner }}
           GITHUB_ACTOR: ${{ github.actor }}
-          NUGET_AUTH_TOKEN: ${{ github.token }}
+          NUGET_AUTH_TOKEN: ${{ secrets.NUGET_TOKEN }}
         run: |
           set -e
           mkdir -p "$GITHUB_WORKSPACE/out"

@@ -3,7 +3,8 @@ name: Agent AOT publish and deploy
 # Publishes Native AOT linux-x64 binary plus install.sh and version metadata,
 # then deploys to public_html/agent on every commit.
 #
-# Requires packages: read and GitHub Packages "Actions access" for MezzoRecovery.TapeDrive.
+# Secrets (Settings → Secrets and variables → Actions):
+#   NUGET_TOKEN - PAT with read:packages (MezzoRecovery.TapeDrive from GitHub Packages)
 
 on:
   push:
@@ -14,7 +15,7 @@ env:
   DOTNET_CLI_TELEMETRY_OPTOUT: 1
   DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 1
   DOTNET_NOLOGO: 1
-  NUGET_AUTH_TOKEN: ${{ github.token }}
+  NUGET_AUTH_TOKEN: ${{ secrets.NUGET_TOKEN }}
 
 jobs:
   publish:
@@ -40,7 +41,7 @@ jobs:
           dotnet nuget add source "$SOURCE" \
             --name github \
             --username "${{ github.actor }}" \
-            --password "${{ github.token }}" \
+            --password "${{ secrets.NUGET_TOKEN }}" \
             --store-password-in-clear-text \
             --valid-authentication-types basic
 

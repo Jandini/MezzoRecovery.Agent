@@ -112,7 +112,13 @@ public sealed class TapeDeviceDiscoveryService(
             {
                 var labels = NullIfEmpty(TapeGstatLabels.FormatShort(probe.Status.GstatFlags));
                 var flags = probe.Status.GstatFlags;
-                if (flags.HasFlag(TapeGstatFlags.DoorOpen) || !flags.HasFlag(TapeGstatFlags.Online))
+                if (flags.HasFlag(TapeGstatFlags.DoorOpen))
+                    return (AgentTapeDeviceStatus.NoMedia, labels);
+
+                if (!flags.HasFlag(TapeGstatFlags.Online))
+                    return (AgentTapeDeviceStatus.Busy, labels);
+
+                if (!flags.HasFlag(TapeGstatFlags.Online))
                     return (AgentTapeDeviceStatus.NoMedia, labels);
 
                 return (AgentTapeDeviceStatus.Ready, labels);

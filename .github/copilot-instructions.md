@@ -50,3 +50,7 @@ Job types: `LoadTape`, `UnloadTape`, `ReadTape`, `WriteTape`, `VerifyTape`, `Inv
 - No em dashes (`-`) or en dashes (`-`) in strings or comments. Use ASCII hyphen-minus (`-`) only.
 - Never write decorative banner or section-divider comments (`// ===...`, `// ---...`).
 - `System.Text.Json` with source-generated serializers for all DTOs.
+
+## Copilot workflow
+
+For exploration discipline (single-repo scope, paths to skip, focused docs), see [.github/instructions/ai-coding-rules.instructions.md](instructions/ai-coding-rules.instructions.md).

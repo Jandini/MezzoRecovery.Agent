@@ -4,21 +4,27 @@ using MezzoRecovery.Agent.Configuration;
 using MezzoRecovery.Agent.Contracts;
 using MezzoRecovery.Agent.Devices;
 using MezzoRecovery.Agent.Identity;
+using MezzoRecovery.Agent.TapeOperations;
 using MezzoRecovery.TapeDrive.Abstractions;
+using MezzoRecovery.TapeDrive.Linux;
 using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
-using Microsoft.Extensions.Options;
 
 namespace MezzoRecovery.Agent.Runtime;
 
 public sealed class AgentConnectionLoop(
     string configPath,
     string credentialPath,
-    TapeDeviceDiscoveryService deviceDiscovery,
+    DeviceReportPublisher reportPublisher,
+    TapeDeviceStatusPoller statusPoller,
     DeviceDiscoveryOptions discoveryOptions,
     IScsiHostEnumerator scsiEnumerator,
+    IScsiTapeDeviceManager scsiTapeDeviceManager,
+    TapeReadRunner tapeReadRunner,
+    TapeMediaControlService tapeMediaControl,
+    StopOperationHandler stopHandler,
     ILogger? logger = null)
 {
     private readonly ILogger _logger = logger ?? NullLogger.Instance;
@@ -36,7 +42,6 @@ public sealed class AgentConnectionLoop(
             return;
         }
 
-        // Declare here; a fresh instance is created inside the loop on each cycle.
         AgentApiClient api = null!;
         var version = Assembly.GetExecutingAssembly().GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
                      ?? Assembly.GetExecutingAssembly().GetName().Version?.ToString()
@@ -51,8 +56,6 @@ public sealed class AgentConnectionLoop(
 
         while (!ct.IsCancellationRequested)
         {
-            // Fresh HttpClient per connection cycle prevents stale TCP connections
-            // from a previous server instance interfering with token requests.
             using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
             api = new AgentApiClient(http);
             HubConnection? hub = null;
@@ -94,7 +97,8 @@ public sealed class AgentConnectionLoop(
                         try
                         {
                             await hub!.InvokeAsync("RegisterRuntime", hostname, os, arch, version, CancellationToken.None);
-                            await ReportDevicesAsync(hub!, CancellationToken.None);
+                            await reportPublisher.PublishFullDiscoveryAsync(hub!, CancellationToken.None);
+                            await reportPublisher.PublishActiveOperationsAsync(hub!, CancellationToken.None);
                             _logger.LogInformation("Re-registration completed after reconnect.");
                             return;
                         }
@@ -116,7 +120,7 @@ public sealed class AgentConnectionLoop(
                     _logger.LogInformation("RefreshTapeDevices command received from server.");
                     try
                     {
-                        await ReportDevicesAsync(hub!, CancellationToken.None);
+                        await reportPublisher.PublishFullDiscoveryAsync(hub!, CancellationToken.None);
                     }
                     catch (Exception ex)
                     {
@@ -129,14 +133,39 @@ public sealed class AgentConnectionLoop(
                     _logger.LogInformation("RescanScsi command received from server.");
                     try
                     {
+                        RemoveStaleScsiTapeDevices();
                         scsiEnumerator.ScanScsiHosts();
                         _logger.LogInformation("SCSI host scan completed. Re-discovering devices.");
-                        await ReportDevicesAsync(hub!, CancellationToken.None);
+                        await reportPublisher.PublishFullDiscoveryAsync(hub!, CancellationToken.None);
                     }
                     catch (Exception ex)
                     {
                         _logger.LogError(ex, "SCSI rescan failed.");
                     }
+                });
+
+                hub.On<StartTapeReadCommand>("StartTapeRead", command =>
+                {
+                    _logger.LogInformation("StartTapeRead received for device {DeviceId}.", command.TapeDeviceId);
+                    tapeReadRunner.Start(hub!, command);
+                    return Task.CompletedTask;
+                });
+
+                hub.On<StopTapeOperationCommand>("StopTapeOperation", command =>
+                {
+                    _logger.LogInformation("StopTapeOperation received for device {DeviceId}.", command.TapeDeviceId);
+                    stopHandler.RequestStop(command);
+                    return Task.CompletedTask;
+                });
+
+                hub.On<ExecuteTapeMediaActionCommand>("ExecuteTapeMediaAction", command =>
+                {
+                    _logger.LogInformation(
+                        "ExecuteTapeMediaAction {Action} received for device {DeviceId}.",
+                        command.OperationType,
+                        command.TapeDeviceId);
+                    tapeMediaControl.Execute(hub!, command);
+                    return Task.CompletedTask;
                 });
 
                 var disconnectTcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -150,12 +179,16 @@ public sealed class AgentConnectionLoop(
                 failureBackoff = TimeSpan.FromSeconds(2);
                 _logger.LogInformation("Connected to MezzoRecovery (agent {AgentId}).", cred.AgentId);
                 await hub.InvokeAsync("RegisterRuntime", hostname, os, arch, version, ct);
-                await ReportDevicesAsync(hub, ct);
+                await reportPublisher.PublishFullDiscoveryAsync(hub, ct);
+                await reportPublisher.PublishActiveOperationsAsync(hub, ct);
 
                 using var heartbeatCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 var heartbeatTask = HeartbeatLoopAsync(hub, hostname, os, arch, version, heartbeatCts.Token);
                 var deviceRefreshTask = discoveryOptions.Enabled
                     ? DeviceRefreshLoopAsync(hub, heartbeatCts.Token)
+                    : Task.CompletedTask;
+                var statusPollerTask = discoveryOptions.Enabled
+                    ? statusPoller.RunAsync(hub, heartbeatCts.Token)
                     : Task.CompletedTask;
 
                 await disconnectTcs.Task.WaitAsync(ct);
@@ -164,6 +197,8 @@ public sealed class AgentConnectionLoop(
                 try { await heartbeatTask; }
                 catch (OperationCanceledException) { }
                 try { await deviceRefreshTask; }
+                catch (OperationCanceledException) { }
+                try { await statusPollerTask; }
                 catch (OperationCanceledException) { }
 
                 await hub.StopAsync(CancellationToken.None);
@@ -194,28 +229,35 @@ public sealed class AgentConnectionLoop(
         }
     }
 
-    private async Task ReportDevicesAsync(HubConnection hub, CancellationToken ct)
+    private void RemoveStaleScsiTapeDevices()
     {
-        if (!discoveryOptions.Enabled)
+        if (!OperatingSystem.IsLinux())
             return;
 
-        try
+        var devices = scsiTapeDeviceManager.GetScsiTapeDevices();
+        if (devices.Count == 0)
+            return;
+
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var device in devices)
         {
-            var devices = deviceDiscovery.DiscoverDevices();
-            await hub.InvokeAsync("ReportTapeDevices", devices.ToArray(), ct);
-            _logger.LogInformation("Reported {Count} tape device(s) to server.", devices.Count);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to report tape devices to server.");
-            try
-            {
-                await hub.InvokeAsync("ReportTapeDeviceDiscoveryFailed", ex.Message, ct);
-            }
-            catch
-            {
-                // ignore secondary failure
-            }
+            if (!seen.Add(device.ScsiAddress))
+                continue;
+
+            var devPath = "/dev/" + device.DeviceName;
+            var probe = LinuxTapeDriveStatus.Probe(devPath);
+            if (probe.Ok || probe.Errno != 5)
+                continue;
+
+            _logger.LogInformation(
+                "RescanScsi: removing stale tape device {DeviceName} at {ScsiAddress} (EIO).",
+                device.DeviceName, device.ScsiAddress);
+
+            if (!scsiTapeDeviceManager.TryDeleteScsiDevice(device.ScsiAddress))
+                _logger.LogWarning(
+                    "RescanScsi: failed to remove {ScsiAddress} - root access may be required.",
+                    device.ScsiAddress);
         }
     }
 
@@ -242,7 +284,6 @@ public sealed class AgentConnectionLoop(
                 }
                 catch (Exception ex)
                 {
-                    // Connection is likely reconnecting - this is expected during server restarts.
                     _logger.LogDebug(ex, "Heartbeat send failed (connection may be reconnecting).");
                 }
             }
@@ -261,7 +302,7 @@ public sealed class AgentConnectionLoop(
             while (!ct.IsCancellationRequested)
             {
                 await Task.Delay(interval, ct);
-                await ReportDevicesAsync(connection, ct);
+                await reportPublisher.PublishFullDiscoveryAsync(connection, ct);
             }
         }
         catch (OperationCanceledException)
@@ -270,9 +311,6 @@ public sealed class AgentConnectionLoop(
         }
     }
 
-    // Retries reconnection indefinitely with capped exponential backoff.
-    // Prevents WithAutomaticReconnect from exhausting a fixed retry budget
-    // when the server takes more than a few minutes to restart.
     private sealed class UnboundedRetryPolicy : IRetryPolicy
     {
         public TimeSpan? NextRetryDelay(RetryContext retryContext)

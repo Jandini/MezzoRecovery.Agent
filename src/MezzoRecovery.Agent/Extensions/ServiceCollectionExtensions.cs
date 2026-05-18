@@ -6,10 +6,13 @@ using MezzoRecovery.Agent.Commands.Update;
 using MezzoRecovery.Agent.Commands.Version;
 using MezzoRecovery.Agent.Configuration;
 using MezzoRecovery.Agent.Devices;
+using MezzoRecovery.Agent.TapeOperations;
+using MezzoRecovery.Tape.Services;
 using MezzoRecovery.TapeDrive.Abstractions;
 using MezzoRecovery.TapeDrive.Linux.Discovery;
 using MezzoRecovery.TapeDrive.Linux.Scsi;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 
 namespace MezzoRecovery.Agent.Extensions;
 
@@ -21,11 +24,27 @@ internal static class ServiceCollectionExtensions
             .AddTransient<EnrollCommandHandler>()
             .AddTransient<RestartCommandHandler>()
             .AddTransient<RunCommandHandler>()
+
             .AddTransient<StatusCommandHandler>()
             .AddTransient<UpdateCommandHandler>()
             .AddTransient<VersionCommandHandler>()
             .AddSingleton<DeviceDiscoveryOptions>()
+            .AddSingleton<TapeOperationOptions>()
+            .AddSingleton<IOptions<TapeOperationOptions>>(sp => Options.Create(sp.GetRequiredService<TapeOperationOptions>()))
+            .AddSingleton<TapeDeviceStatusOptions>()
+            .AddSingleton<IOptions<TapeDeviceStatusOptions>>(sp => Options.Create(sp.GetRequiredService<TapeDeviceStatusOptions>()))
             .AddSingleton<ITapeDriveEnumerator, SysfsTapeDriveEnumerator>()
             .AddSingleton<IScsiHostEnumerator, SysfsScsiHostScanner>()
-            .AddTransient<TapeDeviceDiscoveryService>();
+            .AddSingleton<IScsiTapeDeviceManager, SysfsScsiTapeDeviceManager>()
+            .AddSingleton<TapeDeviceLockManager>()
+            .AddSingleton<TapeOperationStateStore>()
+            .AddSingleton<TapeOperationReporter>()
+            .AddSingleton<ITapeVerifyService, TapeVerifyService>()
+            .AddSingleton<AgentDeviceStateStore>()
+            .AddSingleton<TapeDeviceDiscoveryService>()
+            .AddSingleton<DeviceReportPublisher>()
+            .AddSingleton<TapeDeviceStatusPoller>()
+            .AddSingleton<TapeReadRunner>()
+            .AddSingleton<TapeMediaControlService>()
+            .AddSingleton<StopOperationHandler>();
 }

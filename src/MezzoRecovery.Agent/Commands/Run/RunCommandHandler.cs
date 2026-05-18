@@ -14,6 +14,7 @@ internal sealed class RunCommandHandler(
     TapeDeviceStatusPoller statusPoller,
     DeviceDiscoveryOptions discoveryOptions,
     IScsiHostEnumerator scsiEnumerator,
+    IScsiTapeDeviceManager scsiTapeDeviceManager,
     TapeReadRunner tapeReadRunner,
     TapeMediaControlService tapeMediaControl,
     StopOperationHandler stopHandler)
@@ -46,6 +47,7 @@ internal sealed class RunCommandHandler(
             statusPoller,
             discoveryOptions,
             scsiEnumerator,
+            scsiTapeDeviceManager,
             tapeReadRunner,
             tapeMediaControl,
             stopHandler,

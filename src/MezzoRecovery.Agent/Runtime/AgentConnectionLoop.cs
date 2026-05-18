@@ -6,6 +6,7 @@ using MezzoRecovery.Agent.Devices;
 using MezzoRecovery.Agent.Identity;
 using MezzoRecovery.Agent.TapeOperations;
 using MezzoRecovery.TapeDrive.Abstractions;
+using MezzoRecovery.TapeDrive.Linux;
 using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -20,6 +21,7 @@ public sealed class AgentConnectionLoop(
     TapeDeviceStatusPoller statusPoller,
     DeviceDiscoveryOptions discoveryOptions,
     IScsiHostEnumerator scsiEnumerator,
+    IScsiTapeDeviceManager scsiTapeDeviceManager,
     TapeReadRunner tapeReadRunner,
     TapeMediaControlService tapeMediaControl,
     StopOperationHandler stopHandler,
@@ -131,6 +133,7 @@ public sealed class AgentConnectionLoop(
                     _logger.LogInformation("RescanScsi command received from server.");
                     try
                     {
+                        RemoveStaleScsiTapeDevices();
                         scsiEnumerator.ScanScsiHosts();
                         _logger.LogInformation("SCSI host scan completed. Re-discovering devices.");
                         await reportPublisher.PublishFullDiscoveryAsync(hub!, CancellationToken.None);
@@ -223,6 +226,38 @@ public sealed class AgentConnectionLoop(
                 if (hub is not null)
                     await hub.DisposeAsync();
             }
+        }
+    }
+
+    private void RemoveStaleScsiTapeDevices()
+    {
+        if (!OperatingSystem.IsLinux())
+            return;
+
+        var devices = scsiTapeDeviceManager.GetScsiTapeDevices();
+        if (devices.Count == 0)
+            return;
+
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var device in devices)
+        {
+            if (!seen.Add(device.ScsiAddress))
+                continue;
+
+            var devPath = "/dev/" + device.DeviceName;
+            var probe = LinuxTapeDriveStatus.Probe(devPath);
+            if (probe.Ok || probe.Errno != 5)
+                continue;
+
+            _logger.LogInformation(
+                "RescanScsi: removing stale tape device {DeviceName} at {ScsiAddress} (EIO).",
+                device.DeviceName, device.ScsiAddress);
+
+            if (!scsiTapeDeviceManager.TryDeleteScsiDevice(device.ScsiAddress))
+                _logger.LogWarning(
+                    "RescanScsi: failed to remove {ScsiAddress} - root access may be required.",
+                    device.ScsiAddress);
         }
     }
 

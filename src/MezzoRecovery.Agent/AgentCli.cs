@@ -2,7 +2,6 @@ using System.CommandLine;
 using MezzoRecovery.Agent.Commands.Enroll;
 using MezzoRecovery.Agent.Commands.Restart;
 using MezzoRecovery.Agent.Commands.Run;
-using MezzoRecovery.Agent.Commands.Scan;
 using MezzoRecovery.Agent.Commands.Status;
 using MezzoRecovery.Agent.Commands.Update;
 using MezzoRecovery.Agent.Commands.Version;
@@ -34,15 +33,6 @@ internal static class AgentCli
             return await handler.RunAsync(parseResult, ct).ConfigureAwait(false);
         });
         root.Subcommands.Add(run);
-
-        var scan = new Command("scan", "Remove stale tape devices and rescan SCSI hosts.");
-        ScanCommandHandler.AddOptions(scan);
-        scan.SetAction(async (parseResult, ct) =>
-        {
-            var handler = services.GetRequiredService<ScanCommandHandler>();
-            return await handler.RunAsync(parseResult, ct).ConfigureAwait(false);
-        });
-        root.Subcommands.Add(scan);
 
         var status = new Command("status", "Show enrollment and credential status.");
         StatusCommandHandler.AddOptions(status);

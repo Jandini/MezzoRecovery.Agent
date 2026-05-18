@@ -1,6 +1,7 @@
 using MezzoRecovery.Agent.Commands.Enroll;
 using MezzoRecovery.Agent.Commands.Restart;
 using MezzoRecovery.Agent.Commands.Run;
+using MezzoRecovery.Agent.Commands.Scan;
 using MezzoRecovery.Agent.Commands.Status;
 using MezzoRecovery.Agent.Commands.Update;
 using MezzoRecovery.Agent.Commands.Version;
@@ -24,6 +25,7 @@ internal static class ServiceCollectionExtensions
             .AddTransient<EnrollCommandHandler>()
             .AddTransient<RestartCommandHandler>()
             .AddTransient<RunCommandHandler>()
+            .AddTransient<ScanCommandHandler>()
             .AddTransient<StatusCommandHandler>()
             .AddTransient<UpdateCommandHandler>()
             .AddTransient<VersionCommandHandler>()
@@ -34,6 +36,7 @@ internal static class ServiceCollectionExtensions
             .AddSingleton<IOptions<TapeDeviceStatusOptions>>(sp => Options.Create(sp.GetRequiredService<TapeDeviceStatusOptions>()))
             .AddSingleton<ITapeDriveEnumerator, SysfsTapeDriveEnumerator>()
             .AddSingleton<IScsiHostEnumerator, SysfsScsiHostScanner>()
+            .AddSingleton<IScsiTapeDeviceManager, SysfsScsiTapeDeviceManager>()
             .AddSingleton<TapeDeviceLockManager>()
             .AddSingleton<TapeOperationStateStore>()
             .AddSingleton<TapeOperationReporter>()

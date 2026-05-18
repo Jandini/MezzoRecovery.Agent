@@ -8,6 +8,7 @@ namespace MezzoRecovery.Agent.Devices;
 
 public sealed class TapeDeviceDiscoveryService(
     ITapeDriveEnumerator enumerator,
+    IScsiTapeDeviceManager? scsiTapeDeviceManager,
     ILogger<TapeDeviceDiscoveryService> logger)
 {
     /// <summary>
@@ -97,7 +98,7 @@ public sealed class TapeDeviceDiscoveryService(
         return ProbeTapeStatus(probePath, accessible);
     }
 
-    private static (AgentTapeDeviceStatus Status, string? MtStatusLabels) ProbeTapeStatus(string probePath, bool accessible)
+    private (AgentTapeDeviceStatus Status, string? MtStatusLabels) ProbeTapeStatus(string probePath, bool accessible)
     {
         if (!accessible)
             return (AgentTapeDeviceStatus.Unavailable, null);
@@ -118,11 +119,14 @@ public sealed class TapeDeviceDiscoveryService(
                 if (!flags.HasFlag(TapeGstatFlags.Online))
                     return (AgentTapeDeviceStatus.Busy, labels);
 
-                if (!flags.HasFlag(TapeGstatFlags.Online))
-                    return (AgentTapeDeviceStatus.NoMedia, labels);
-
                 return (AgentTapeDeviceStatus.Ready, labels);
             }
+
+            // EIO (errno 5): the device node exists but MTIOCGET failed - likely a stale/disconnected
+            // device. Attempt a one-shot SCSI removal and re-probe. If the device was genuinely
+            // disconnected it will disappear; if it recovers the second probe will succeed.
+            if (probe.Errno == 5 && scsiTapeDeviceManager is not null)
+                return TryRecoverEioDevice(probePath);
 
             var mtLabels = probe.FailureCategory switch
             {
@@ -144,6 +148,83 @@ public sealed class TapeDeviceDiscoveryService(
         catch
         {
             return (AgentTapeDeviceStatus.Present, null);
+        }
+    }
+
+    /// <summary>
+    /// Called exactly once when MTIOCGET returns EIO for <paramref name="probePath"/>.
+    /// Attempts to remove the stale SCSI device via sysfs, then re-probes.
+    /// The device will either recover (probe succeeds) or disappear (Unavailable).
+    /// </summary>
+    private (AgentTapeDeviceStatus Status, string? MtStatusLabels) TryRecoverEioDevice(string probePath)
+    {
+        var nstName = Path.GetFileName(probePath); // e.g. "nst2"
+        logger.LogWarning(
+            "MTIOCGET returned EIO for {DevicePath} - device may be stale/disconnected. Attempting SCSI removal.",
+            probePath);
+
+        var devices = scsiTapeDeviceManager!.GetScsiTapeDevices();
+        var match = devices.FirstOrDefault(d => string.Equals(d.DeviceName, nstName, StringComparison.Ordinal));
+
+        if (match is null)
+        {
+            logger.LogWarning(
+                "Could not find SCSI address for {DeviceName} in sysfs - skipping removal, classifying as disconnected.",
+                nstName);
+            return (AgentTapeDeviceStatus.Unavailable, "DISCONNECTED");
+        }
+
+        logger.LogInformation(
+            "Removing stale SCSI device {DeviceName} at address {ScsiAddress}.",
+            match.DeviceName, match.ScsiAddress);
+
+        var deleted = scsiTapeDeviceManager.TryDeleteScsiDevice(match.ScsiAddress);
+        if (!deleted)
+        {
+            logger.LogWarning(
+                "Failed to remove SCSI device {ScsiAddress} - root access may be required. Classifying {DeviceName} as disconnected.",
+                match.ScsiAddress, match.DeviceName);
+            return (AgentTapeDeviceStatus.Unavailable, "DISCONNECTED");
+        }
+
+        logger.LogInformation(
+            "SCSI device {ScsiAddress} ({DeviceName}) removed. Re-probing {DevicePath}.",
+            match.ScsiAddress, match.DeviceName, probePath);
+
+        // Re-probe: the device node may now be gone (ENOENT -> Unavailable) or, if the
+        // driver re-attached it, the probe may now succeed.
+        var accessible = CheckAccessible(probePath);
+        if (!accessible)
+        {
+            logger.LogInformation(
+                "Device {DevicePath} is no longer accessible after SCSI removal - treated as removed.",
+                probePath);
+            return (AgentTapeDeviceStatus.Unavailable, null);
+        }
+
+        try
+        {
+            var retry = LinuxTapeDriveStatus.Probe(probePath);
+            if (retry.Ok)
+            {
+                var labels = NullIfEmpty(TapeGstatLabels.FormatShort(retry.Status.GstatFlags));
+                var flags = retry.Status.GstatFlags;
+                logger.LogInformation("Re-probe of {DevicePath} succeeded after SCSI removal.", probePath);
+                if (flags.HasFlag(TapeGstatFlags.DoorOpen))
+                    return (AgentTapeDeviceStatus.NoMedia, labels);
+                if (!flags.HasFlag(TapeGstatFlags.Online))
+                    return (AgentTapeDeviceStatus.Busy, labels);
+                return (AgentTapeDeviceStatus.Ready, labels);
+            }
+
+            logger.LogInformation(
+                "Re-probe of {DevicePath} still failed (errno {Errno}) after SCSI removal - classifying as unavailable.",
+                probePath, retry.Errno);
+            return (AgentTapeDeviceStatus.Unavailable, null);
+        }
+        catch
+        {
+            return (AgentTapeDeviceStatus.Unavailable, null);
         }
     }
 

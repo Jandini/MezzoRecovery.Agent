@@ -348,8 +348,8 @@ public sealed class AgentConnectionLoop(
     {
         try
         {
-            var freeBytes = GetFreeBytes(_tapeCacheDirectory);
-            await hub.InvokeAsync("ReportCacheStatus", freeBytes, ct);
+            var (freeBytes, error) = ProbeDirectory(_tapeCacheDirectory);
+            await hub.InvokeAsync("ReportCacheStatus", freeBytes, error, ct);
         }
         catch (Exception ex)
         {
@@ -357,17 +357,18 @@ public sealed class AgentConnectionLoop(
         }
     }
 
-    private static long? GetFreeBytes(string? path)
+    private static (long? FreeBytes, string? Error) ProbeDirectory(string? path)
     {
         if (string.IsNullOrEmpty(path))
-            return null;
+            return (null, null);
         try
         {
-            return new DriveInfo(path).AvailableFreeSpace;
+            Directory.CreateDirectory(path);
+            return (new DriveInfo(path).AvailableFreeSpace, null);
         }
-        catch
+        catch (Exception ex)
         {
-            return null;
+            return (null, ex.Message);
         }
     }
 

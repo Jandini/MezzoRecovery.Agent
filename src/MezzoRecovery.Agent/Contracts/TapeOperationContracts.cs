@@ -27,6 +27,10 @@ public sealed record ExecuteTapeMediaActionCommand(
     [property: JsonPropertyName("requestedByUserId")] Guid RequestedByUserId,
     [property: JsonPropertyName("requestedAt")] DateTimeOffset RequestedAt);
 
+public sealed record RefreshTapeDeviceCommand(
+    [property: JsonPropertyName("tapeDeviceId")] Guid TapeDeviceId,
+    [property: JsonPropertyName("stableDeviceKey")] string StableDeviceKey);
+
 // Messages: Agent -> API
 
 public sealed record TapeOperationStartedMessage(

@@ -88,4 +88,27 @@ public sealed class DeviceReportPublisher(
             logger.LogDebug(ex, "Failed to publish active operations snapshot.");
         }
     }
+
+    /// <summary>
+    /// On-demand refresh for one drive: probe MT status when idle, push device
+    /// cache, then reconcile live operations with the API.
+    /// </summary>
+    public async Task PublishDeviceStateRefreshAsync(
+        HubConnection hub,
+        string stableDeviceKey,
+        CancellationToken ct)
+    {
+        if (!operationState.IsDeviceBusyByStableKey(stableDeviceKey))
+        {
+            var device = store.GetByStableKey(stableDeviceKey);
+            if (device is not null)
+            {
+                var (status, labels) = discovery.ProbeStatus(device);
+                if (store.UpdateStatus(stableDeviceKey, status, labels))
+                    await PublishCurrentAsync(hub, ct);
+            }
+        }
+
+        await PublishActiveOperationsAsync(hub, ct);
+    }
 }

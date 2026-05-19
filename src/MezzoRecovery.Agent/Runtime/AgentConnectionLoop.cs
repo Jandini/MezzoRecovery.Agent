@@ -128,6 +128,27 @@ public sealed class AgentConnectionLoop(
                     }
                 });
 
+                hub.On<RefreshTapeDeviceCommand>("RefreshTapeDevice", async command =>
+                {
+                    _logger.LogInformation(
+                        "RefreshTapeDevice command received for device {DeviceId}.",
+                        command.TapeDeviceId);
+                    try
+                    {
+                        await reportPublisher.PublishDeviceStateRefreshAsync(
+                            hub!,
+                            command.StableDeviceKey,
+                            CancellationToken.None);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(
+                            ex,
+                            "Device state refresh failed for {DeviceId}.",
+                            command.TapeDeviceId);
+                    }
+                });
+
                 hub.On("RescanScsi", async () =>
                 {
                     _logger.LogInformation("RescanScsi command received from server.");

@@ -96,6 +96,7 @@ public sealed class AgentTapeDeviceDto
 [JsonSerializable(typeof(StartTapeReadCommand))]
 [JsonSerializable(typeof(StopTapeOperationCommand))]
 [JsonSerializable(typeof(ExecuteTapeMediaActionCommand))]
+[JsonSerializable(typeof(RefreshTapeDeviceCommand))]
 [JsonSerializable(typeof(TapeOperationStartedMessage))]
 [JsonSerializable(typeof(TapeOperationProgressMessage))]
 [JsonSerializable(typeof(TapeOperationCompletedMessage))]

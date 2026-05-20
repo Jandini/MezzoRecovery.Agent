@@ -35,6 +35,24 @@ public enum AgentTapeDeviceStatus
     Removed = 8,
 }
 
+/// <summary>
+/// Cartridge lifecycle status for the UI device card. Derived from drive flags,
+/// active tape operation, and the loader's preflight history. See <c>TapeMediaLoader</c>.
+/// </summary>
+public enum TapeMediaStatus
+{
+    Unknown = 0,
+    NoMedia = 1,
+    Loaded = 2,
+    Identifying = 3,
+    Ready = 4,
+    Error = 5,
+    Reading = 6,
+    FastForwarding = 7,
+    Rewinding = 8,
+    Ejecting = 9,
+}
+
 public sealed class AgentTapeDeviceDto
 {
     [JsonPropertyName("stableDeviceKey")]
@@ -81,6 +99,21 @@ public sealed class AgentTapeDeviceDto
 
     [JsonPropertyName("lastError")]
     public string? LastError { get; set; }
+
+    [JsonPropertyName("mediaStatus")]
+    public TapeMediaStatus MediaStatus { get; set; }
+
+    [JsonPropertyName("detectedBlockSizeBytes")]
+    public int? DetectedBlockSizeBytes { get; set; }
+
+    [JsonPropertyName("detectedBlockBufferSizeBytes")]
+    public int? DetectedBlockBufferSizeBytes { get; set; }
+
+    [JsonPropertyName("lastPreflightAt")]
+    public DateTimeOffset? LastPreflightAt { get; set; }
+
+    [JsonPropertyName("preflightError")]
+    public string? PreflightError { get; set; }
 }
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
@@ -93,6 +126,7 @@ public sealed class AgentTapeDeviceDto
 [JsonSerializable(typeof(AgentCredentialFile))]
 [JsonSerializable(typeof(AgentTapeDeviceDto))]
 [JsonSerializable(typeof(AgentTapeDeviceDto[]))]
+[JsonSerializable(typeof(TapeMediaStatus))]
 [JsonSerializable(typeof(StartTapeReadCommand))]
 [JsonSerializable(typeof(StopTapeOperationCommand))]
 [JsonSerializable(typeof(ExecuteTapeMediaActionCommand))]

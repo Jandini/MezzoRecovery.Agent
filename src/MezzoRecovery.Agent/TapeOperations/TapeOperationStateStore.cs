@@ -23,6 +23,19 @@ public sealed class TapeOperationStateStore
         return false;
     }
 
+    /// <summary>
+    /// Returns the active operation type for the given stable key, or null when the device
+    /// is idle. Used by <c>TapeMediaLoader</c> to project the current operation into the
+    /// derived <c>TapeMediaStatus</c>.
+    /// </summary>
+    public string? GetActiveOperationTypeByStableKey(string stableDeviceKey)
+    {
+        foreach (var op in _byDevice.Values)
+            if (string.Equals(op.StableDeviceKey, stableDeviceKey, StringComparison.Ordinal))
+                return op.OperationType;
+        return null;
+    }
+
     public IReadOnlySet<string> SnapshotBusyStableKeys()
     {
         var set = new HashSet<string>(StringComparer.Ordinal);
@@ -45,6 +58,10 @@ public sealed class TapeOperationStateStore
 
     public ActiveOperationSnapshot[] BuildSnapshots() =>
         _byDevice.Values
+            // Preflight is agent-initiated and uses a synthetic TapeDeviceId Guid.
+            // The API never issued it and has no record of the Guid, so omit it from the
+            // wire snapshot. The UI learns about preflight via TapeMediaStatus.Identifying instead.
+            .Where(s => !string.Equals(s.OperationType, TapeOperationTypes.Preflight, StringComparison.Ordinal))
             .Select(s => new ActiveOperationSnapshot(
                 s.TapeDeviceId,
                 s.OperationType,

@@ -30,10 +30,25 @@ public sealed class TapePreflightRunner(
     TapeDeviceLockManager locks,
     TapeOperationStateStore state,
     AgentDeviceStateStore deviceStore,
-    DeviceReportPublisher publisher,
     IOptions<TapeMediaLoaderOptions> options,
     ILogger<TapePreflightRunner> logger) : ITapePreflightTrigger
 {
+    // Inlined to avoid pulling DeviceReportPublisher in here: that would close a DI cycle
+    // (runner → publisher → loader → trigger → runner), which Microsoft.Extensions.DependencyInjection
+    // doesn't catch at BuildServiceProvider time and crashes the agent on first resolution.
+    private async Task PublishDeviceSnapshotAsync(HubConnection hub, CancellationToken ct)
+    {
+        var snapshot = deviceStore.Snapshot();
+        if (snapshot.Count == 0) return;
+        try
+        {
+            await hub.InvokeAsync("ReportTapeDevices", snapshot.ToArray(), ct).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            logger.LogDebug(ex, "Failed to publish device snapshot.");
+        }
+    }
     public void Start(HubConnection hub, AgentTapeDeviceDto device) =>
         _ = Task.Run(() => RunAsync(hub, device));
 
@@ -85,10 +100,7 @@ public sealed class TapePreflightRunner(
         // Flip media status to Identifying immediately so the UI doesn't wait
         // for the next 5s poll tick to learn that preflight has started.
         if (deviceStore.UpdateMediaStatus(stableKey, TapeMediaStatus.Identifying))
-        {
-            try { await publisher.PublishCurrentAsync(hub, CancellationToken.None); }
-            catch (Exception ex) { logger.LogDebug(ex, "Failed to publish Identifying status for {Key}.", stableKey); }
-        }
+            await PublishDeviceSnapshotAsync(hub, CancellationToken.None);
 
         PreflightResult? result = null;
         string? failureMessage = null;
@@ -151,7 +163,6 @@ public sealed class TapePreflightRunner(
         cts.Dispose();
         deviceStore.UpdateMediaStatus(stableKey, terminal);
 
-        try { await publisher.PublishCurrentAsync(hub, CancellationToken.None); }
-        catch (Exception ex) { logger.LogDebug(ex, "Failed to publish terminal preflight state for {Key}.", stableKey); }
+        await PublishDeviceSnapshotAsync(hub, CancellationToken.None);
     }
 }

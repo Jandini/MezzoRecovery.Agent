@@ -9,6 +9,7 @@ public static class AgentPaths
     public const string DefaultCredentialPath = "/var/lib/mezzorecovery-agent/agent.credential";
     public const string DefaultMachineIdPath = "/var/lib/mezzorecovery-agent/machine.id";
     public const string DefaultLockPath = "/run/mezzorecovery-agent.lock";
+    public const string DefaultCacheDirectory = "/opt/mezzorecovery-cache";
 }
 
 public static class AgentConfigLoader

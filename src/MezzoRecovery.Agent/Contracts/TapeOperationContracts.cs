@@ -31,6 +31,9 @@ public sealed record RefreshTapeDeviceCommand(
     [property: JsonPropertyName("tapeDeviceId")] Guid TapeDeviceId,
     [property: JsonPropertyName("stableDeviceKey")] string StableDeviceKey);
 
+public sealed record AgentConfigCommand(
+    [property: JsonPropertyName("tapeCacheDirectory")] string? TapeCacheDirectory);
+
 // Messages: Agent -> API
 
 public sealed record TapeOperationStartedMessage(

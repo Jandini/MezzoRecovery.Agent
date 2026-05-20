@@ -28,6 +28,7 @@ public sealed class AgentConnectionLoop(
     ILogger? logger = null)
 {
     private readonly ILogger _logger = logger ?? NullLogger.Instance;
+    private volatile string? _tapeCacheDirectory = AgentPaths.DefaultCacheDirectory;
 
     public async Task RunAsync(CancellationToken ct)
     {
@@ -97,6 +98,7 @@ public sealed class AgentConnectionLoop(
                         try
                         {
                             await hub!.InvokeAsync("RegisterRuntime", hostname, os, arch, version, CancellationToken.None);
+                            await ReportCacheStatusAsync(hub!, CancellationToken.None);
                             await reportPublisher.PublishFullDiscoveryAsync(hub!, CancellationToken.None);
                             await reportPublisher.PublishActiveOperationsAsync(hub!, CancellationToken.None);
                             _logger.LogInformation("Re-registration completed after reconnect.");
@@ -114,6 +116,14 @@ public sealed class AgentConnectionLoop(
                         }
                     }
                 };
+
+                hub.On<AgentConfigCommand>("UpdateAgentConfig", async cmd =>
+                {
+                    _tapeCacheDirectory = string.IsNullOrEmpty(cmd.TapeCacheDirectory)
+                        ? AgentPaths.DefaultCacheDirectory
+                        : cmd.TapeCacheDirectory;
+                    await ReportCacheStatusAsync(hub, CancellationToken.None);
+                });
 
                 hub.On("RefreshTapeDevices", async () =>
                 {
@@ -200,6 +210,7 @@ public sealed class AgentConnectionLoop(
                 failureBackoff = TimeSpan.FromSeconds(2);
                 _logger.LogInformation("Connected to MezzoRecovery (agent {AgentId}).", cred.AgentId);
                 await hub.InvokeAsync("RegisterRuntime", hostname, os, arch, version, ct);
+                await ReportCacheStatusAsync(hub, ct);
                 await reportPublisher.PublishFullDiscoveryAsync(hub, ct);
                 await reportPublisher.PublishActiveOperationsAsync(hub, ct);
 
@@ -298,6 +309,7 @@ public sealed class AgentConnectionLoop(
                 try
                 {
                     await connection.InvokeAsync("Heartbeat", hostname, os, arch, version, ct);
+                    await ReportCacheStatusAsync(connection, ct);
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {
@@ -329,6 +341,34 @@ public sealed class AgentConnectionLoop(
         catch (OperationCanceledException)
         {
             // shutdown
+        }
+    }
+
+    private async Task ReportCacheStatusAsync(HubConnection hub, CancellationToken ct)
+    {
+        try
+        {
+            var (freeBytes, error) = ProbeDirectory(_tapeCacheDirectory);
+            await hub.InvokeAsync("ReportCacheStatus", freeBytes, error, ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Cache status report failed.");
+        }
+    }
+
+    private static (long? FreeBytes, string? Error) ProbeDirectory(string? path)
+    {
+        if (string.IsNullOrEmpty(path))
+            return (null, null);
+        try
+        {
+            Directory.CreateDirectory(path);
+            return (new DriveInfo(path).AvailableFreeSpace, null);
+        }
+        catch (Exception ex)
+        {
+            return (null, ex.Message);
         }
     }
 

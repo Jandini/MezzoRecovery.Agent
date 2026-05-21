@@ -146,10 +146,10 @@ public sealed class TapePreflightRunner(
             detectedBlockSize = result.BlockSize > 0 ? result.BlockSize : null;
             detectedBufferSize = result.BlockBufferSize > 0 ? result.BlockBufferSize : null;
             error = null;
-            terminal = TapeMediaStatus.Ready;
+            terminal = result.IsEmpty ? TapeMediaStatus.Empty : TapeMediaStatus.Ready;
             logger.LogInformation(
-                "Preflight completed for device {Key}: block size {BlockSize}, buffer {BufferSize}.",
-                stableKey, result.BlockSize, result.BlockBufferSize);
+                "Preflight completed for device {Key}: media={Media}, block size {BlockSize}, buffer {BufferSize}.",
+                stableKey, terminal, result.BlockSize, result.BlockBufferSize);
         }
         else
         {

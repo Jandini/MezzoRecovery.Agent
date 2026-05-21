@@ -53,6 +53,7 @@ public enum TapeMediaStatus
     Rewinding = 8,
     Ejecting = 9,
     CleaningRequired = 10,
+    Empty = 11,
 }
 
 public static class TapeMediaStatusExtensions

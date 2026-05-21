@@ -1,14 +1,17 @@
 using MezzoRecovery.Agent;
 using MezzoRecovery.Agent.Extensions;
+using MezzoRecovery.Agent.Logging;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Console;
 
 using var serviceProvider = new ServiceCollection()
-    .AddLogging(b => b.AddSimpleConsole(o =>
-    {
-        o.SingleLine = true;
-        o.TimestampFormat = "HH:mm:ss ";
-    }))
+    .AddLogging(b => b
+        .AddConsole(o => o.FormatterName = "terse")
+        .AddConsoleFormatter<TerseConsoleFormatter, SimpleConsoleFormatterOptions>(o =>
+        {
+            o.TimestampFormat = "HH:mm:ss ";
+        }))
     .AddAgentApp()
     .BuildServiceProvider();
 

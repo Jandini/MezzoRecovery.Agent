@@ -55,6 +55,7 @@ public sealed class TapeMediaLoader(
 
         _lastDoorOpenAt.TryGetValue(stableKey, out var lastDoorOpenAt);
         var activeOp = operationState.GetActiveOperationTypeByStableKey(stableKey);
+        var isRewindActive = operationState.IsRewindActiveByStableKey(stableKey);
 
         var computed = Compute(
             driveStatus,
@@ -63,7 +64,8 @@ public sealed class TapeMediaLoader(
             device.LastPreflightAt,
             device.PreflightError,
             device.DetectedBlockBufferSizeBytes,
-            lastDoorOpenAt == default ? null : lastDoorOpenAt);
+            lastDoorOpenAt == default ? null : lastDoorOpenAt,
+            isRewindActive);
 
         var changed = deviceStore.UpdateMediaStatus(stableKey, computed);
 
@@ -96,7 +98,8 @@ public sealed class TapeMediaLoader(
         DateTimeOffset? lastPreflightAt,
         string? preflightError,
         int? detectedBlockBufferSizeBytes = null,
-        DateTimeOffset? lastDoorOpenAt = null)
+        DateTimeOffset? lastDoorOpenAt = null,
+        bool isRewindActive = false)
     {
         // 1. DR_OPEN (or the equivalent NoMedia drive status) dominates everything else —
         //    no cartridge means no lifecycle.
@@ -106,7 +109,15 @@ public sealed class TapeMediaLoader(
             return TapeMediaStatus.NoMedia;
 
         // 2. An active operation projects directly onto the media-lifecycle state.
+        //    When the runner has flagged a rewind sub-step (e.g. the rewind that wraps a
+        //    Preflight or a Read), surface Rewinding regardless of the wrapping op type —
+        //    the operator cares about what the cartridge is *doing*, not which command
+        //    triggered it.
         if (activeOperationType is not null)
+        {
+            if (isRewindActive)
+                return TapeMediaStatus.Rewinding;
+
             return activeOperationType switch
             {
                 TapeOperationTypes.Preflight => TapeMediaStatus.Identifying,
@@ -116,6 +127,7 @@ public sealed class TapeMediaLoader(
                 TapeOperationTypes.Eject => TapeMediaStatus.Ejecting,
                 _ => TapeMediaStatus.Unknown,
             };
+        }
 
         // 3. Drive must be online & ready for any cartridge-aware state.
         if (driveStatus != AgentTapeDeviceStatus.Ready)

@@ -209,6 +209,40 @@ public sealed class TapeMediaLoaderComputeTests
 
         Assert.Equal(TapeMediaStatus.Reading, status);
     }
+
+    [Theory]
+    [InlineData(TapeOperationTypes.Preflight)]
+    [InlineData(TapeOperationTypes.Read)]
+    public void Rewind_sub_phase_overrides_wrapping_op_type(string wrappingOp)
+    {
+        var status = TapeMediaLoader.Compute(
+            AgentTapeDeviceStatus.Ready,
+            TapeGstatFlags.Online,
+            activeOperationType: wrappingOp,
+            lastPreflightAt: null,
+            preflightError: null,
+            lastDoorOpenAt: null,
+            isRewindActive: true);
+
+        Assert.Equal(TapeMediaStatus.Rewinding, status);
+    }
+
+    [Fact]
+    public void Rewind_sub_phase_does_not_apply_when_no_op_is_active()
+    {
+        // No active op: a stale rewind flag must not flip an otherwise-idle device.
+        var status = TapeMediaLoader.Compute(
+            AgentTapeDeviceStatus.Ready,
+            TapeGstatFlags.Online,
+            activeOperationType: null,
+            lastPreflightAt: DateTimeOffset.UtcNow,
+            preflightError: null,
+            detectedBlockBufferSizeBytes: 65536,
+            lastDoorOpenAt: null,
+            isRewindActive: true);
+
+        Assert.Equal(TapeMediaStatus.Ready, status);
+    }
 }
 
 public sealed class TapeMediaLoaderObserveTests

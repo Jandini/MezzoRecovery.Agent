@@ -132,7 +132,11 @@ public sealed class TapeReadRunner(
                 TapeBlockSizeBytes = command.TapeBlockSizeBytes,
                 BufferSizeBytes = command.BufferSizeBytes,
                 ProgressIntervalSeconds = Math.Max(0, options.Value.ProgressReportIntervalSeconds),
-                RewindAfterComplete = false,
+                // RewindAfterComplete=true so the verify service rewinds the cartridge back
+                // to BOT after the read. The phase callback below surfaces the rewind as
+                // MediaStatus.Rewinding so the operator sees the cartridge moving even
+                // while the wrapping op type is still Read.
+                RewindAfterComplete = true,
                 EjectAfterComplete = false,
             };
 
@@ -146,6 +150,17 @@ public sealed class TapeReadRunner(
                 op.LastThroughputGbph = gbph;
                 op.LastElapsedSeconds = elapsedSec;
                 op.LastProgressAt = DateTimeOffset.UtcNow;
+
+                // TapeVerifyService emits TapeClonePhase.Rewinding for both the initial rewind
+                // (before reading) and the post-op rewind. Project that onto the device card so
+                // the badge tracks the physical action rather than the wrapping op type.
+                var rewinding = p.Phase == TapeClonePhase.Rewinding;
+                if (state.SetRewindActiveByStableKey(command.StableDeviceKey, rewinding))
+                {
+                    var newStatus = rewinding ? TapeMediaStatus.Rewinding : TapeMediaStatus.Reading;
+                    if (deviceStore.UpdateMediaStatus(command.StableDeviceKey, newStatus))
+                        _ = publisher.PublishCurrentAsync(hub, CancellationToken.None);
+                }
 
                 _ = reporter.ProgressAsync(
                     hub,

@@ -6,6 +6,7 @@ using MezzoRecovery.Tape.Services;
 using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using System;
 
 namespace MezzoRecovery.Agent.TapeOperations;
 
@@ -122,7 +123,22 @@ public sealed class TapePreflightRunner(
             };
 
             logger.LogInformation("Preflight starting for device {Key} at {Path}.", stableKey, probePath);
-            result = await preflightService.RunAsync(request, cts.Token).ConfigureAwait(false);
+
+            // While the preflight service is mid-rewind, surface MediaStatus.Rewinding even
+            // though the wrapping op is Preflight. The flag is read on the next loader
+            // observation tick; we also publish immediately so the UI doesn't wait.
+            var phaseProgress = new Progress<TapeClonePhase>(phase =>
+            {
+                var rewinding = phase == TapeClonePhase.Rewinding;
+                if (!state.SetRewindActiveByStableKey(stableKey, rewinding))
+                    return;
+
+                var newStatus = rewinding ? TapeMediaStatus.Rewinding : TapeMediaStatus.Identifying;
+                if (deviceStore.UpdateMediaStatus(stableKey, newStatus))
+                    _ = PublishDeviceSnapshotAsync(hub, CancellationToken.None);
+            });
+
+            result = await preflightService.RunAsync(request, cts.Token, phaseProgress).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {

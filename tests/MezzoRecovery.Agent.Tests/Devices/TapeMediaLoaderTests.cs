@@ -160,6 +160,34 @@ public sealed class TapeMediaLoaderComputeTests
 
         Assert.Equal(TapeMediaStatus.Unknown, status);
     }
+
+    [Fact]
+    public void GMT_CLN_on_ready_drive_yields_CleaningRequired()
+    {
+        var status = TapeMediaLoader.Compute(
+            AgentTapeDeviceStatus.Ready,
+            TapeGstatFlags.Online | TapeGstatFlags.CleaningRequested,
+            activeOperationType: null,
+            lastPreflightAt: DateTimeOffset.UtcNow.AddMinutes(-1),
+            preflightError: null,
+            lastDoorOpenAt: null);
+
+        Assert.Equal(TapeMediaStatus.CleaningRequired, status);
+    }
+
+    [Fact]
+    public void GMT_CLN_does_not_override_active_operation()
+    {
+        var status = TapeMediaLoader.Compute(
+            AgentTapeDeviceStatus.Ready,
+            TapeGstatFlags.Online | TapeGstatFlags.CleaningRequested,
+            activeOperationType: TapeOperationTypes.Read,
+            lastPreflightAt: null,
+            preflightError: null,
+            lastDoorOpenAt: null);
+
+        Assert.Equal(TapeMediaStatus.Reading, status);
+    }
 }
 
 public sealed class TapeMediaLoaderObserveTests

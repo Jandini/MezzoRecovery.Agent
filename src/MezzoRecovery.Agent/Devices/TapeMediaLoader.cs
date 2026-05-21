@@ -119,6 +119,11 @@ public sealed class TapeMediaLoader(
         if (driveStatus != AgentTapeDeviceStatus.Ready)
             return TapeMediaStatus.Unknown;
 
+        // 3a. GMT_CLN: drive is requesting a cleaning tape — surface this before any
+        //     preflight result so the operator sees the warning immediately.
+        if (flags is { } clnFlags && clnFlags.HasFlag(TapeGstatFlags.CleaningRequested))
+            return TapeMediaStatus.CleaningRequired;
+
         // 4. Preflight history: a result is "current" iff no DR_OPEN happened since.
         var preflightIsCurrent = lastPreflightAt is not null
                                  && (lastDoorOpenAt is null || lastDoorOpenAt <= lastPreflightAt);

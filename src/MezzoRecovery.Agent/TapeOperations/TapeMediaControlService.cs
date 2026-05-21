@@ -38,6 +38,32 @@ public sealed class TapeMediaControlService(
             return;
         }
 
+        // Hardware pre-flight: if the drive is already mid-motion (typically because the
+        // operator pressed the physical eject/load button), don't try to run on top of
+        // it — the mt ioctl would either hang until the cartridge settles or fail with
+        // an unhelpful error. Reject up front so the UI clears the request cleanly.
+        var snapshot = deviceStore.GetByStableKey(command.StableDeviceKey);
+        if (snapshot is not null)
+        {
+            if (snapshot.Status == AgentTapeDeviceStatus.Busy || snapshot.MediaStatus.IsBusy())
+            {
+                var now = DateTimeOffset.UtcNow;
+                await reporter.FailedAsync(hub, BuildFailed(command, now, now, "DeviceBusy",
+                    "Device is busy with another operation."), CancellationToken.None);
+                return;
+            }
+
+            if (NeedsMedia(command.OperationType)
+                && (snapshot.Status == AgentTapeDeviceStatus.NoMedia
+                    || snapshot.MediaStatus == TapeMediaStatus.NoMedia))
+            {
+                var now = DateTimeOffset.UtcNow;
+                await reporter.FailedAsync(hub, BuildFailed(command, now, now, "NoMedia",
+                    "No tape media loaded."), CancellationToken.None);
+                return;
+            }
+        }
+
         using var deviceLock = await locks.AcquireAsync(command.StableDeviceKey, CancellationToken.None);
 
         var startedAt = DateTimeOffset.UtcNow;
@@ -134,6 +160,11 @@ public sealed class TapeMediaControlService(
             }
         }
     }
+
+    // Eject is allowed against an empty drive (no-op door unlock); Rewind / Space
+    // need a cartridge to operate on.
+    private static bool NeedsMedia(string operationType) =>
+        operationType is TapeOperationTypes.Rewind or TapeOperationTypes.Space;
 
     private static TapeOperationFailedMessage BuildFailed(
         ExecuteTapeMediaActionCommand command,

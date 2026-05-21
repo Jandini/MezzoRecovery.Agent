@@ -53,6 +53,19 @@ public enum TapeMediaStatus
     Ejecting = 9,
 }
 
+public static class TapeMediaStatusExtensions
+{
+    // True while the cartridge is mid-motion. Used as a pre-flight gate so the
+    // agent rejects a new operation when the hardware is already doing something
+    // (e.g. the operator pressed the physical eject button on the drive).
+    public static bool IsBusy(this TapeMediaStatus status) => status is
+        TapeMediaStatus.Identifying
+        or TapeMediaStatus.Reading
+        or TapeMediaStatus.FastForwarding
+        or TapeMediaStatus.Rewinding
+        or TapeMediaStatus.Ejecting;
+}
+
 public sealed class AgentTapeDeviceDto
 {
     [JsonPropertyName("stableDeviceKey")]

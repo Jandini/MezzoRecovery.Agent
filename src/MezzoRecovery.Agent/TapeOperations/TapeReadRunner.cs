@@ -54,6 +54,36 @@ public sealed class TapeReadRunner(
             return;
         }
 
+        // Hardware pre-flight: refuse to read when the drive is mid-motion or has no
+        // cartridge loaded. Mirrors the gate in TapeMediaControlService — see the note
+        // there for the operator-physical-button scenario this protects against.
+        var snapshot = deviceStore.GetByStableKey(command.StableDeviceKey);
+        if (snapshot is not null)
+        {
+            if (snapshot.Status == AgentTapeDeviceStatus.Busy || snapshot.MediaStatus.IsBusy())
+            {
+                var now = DateTimeOffset.UtcNow;
+                await reporter.FailedAsync(
+                    hub,
+                    BuildFailedMessage(command, now, now, "DeviceBusy",
+                        "Device is busy with another operation.", TapeCloneStats.Empty),
+                    CancellationToken.None);
+                return;
+            }
+
+            if (snapshot.Status == AgentTapeDeviceStatus.NoMedia
+                || snapshot.MediaStatus == TapeMediaStatus.NoMedia)
+            {
+                var now = DateTimeOffset.UtcNow;
+                await reporter.FailedAsync(
+                    hub,
+                    BuildFailedMessage(command, now, now, "NoMedia",
+                        "No tape media loaded.", TapeCloneStats.Empty),
+                    CancellationToken.None);
+                return;
+            }
+        }
+
         using var deviceLock = await locks.AcquireAsync(command.StableDeviceKey, CancellationToken.None);
 
         var startedAt = DateTimeOffset.UtcNow;

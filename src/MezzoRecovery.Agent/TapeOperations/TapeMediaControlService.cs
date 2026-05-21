@@ -38,10 +38,14 @@ public sealed class TapeMediaControlService(
             return;
         }
 
-        // Hardware pre-flight: if the drive is already mid-motion (typically because the
-        // operator pressed the physical eject/load button), don't try to run on top of
-        // it — the mt ioctl would either hang until the cartridge settles or fail with
-        // an unhelpful error. Reject up front so the UI clears the request cleanly.
+        // Hardware pre-flight: re-probe the drive *now* rather than trusting the cached
+        // sweep. The cache may be many seconds stale, and acting on a stale "Ready" for a
+        // drive whose cartridge was just pulled means OpenRead blocks long enough for the
+        // UI to sit on "Ejecting · 00:28" before erroring with "No medium found". The
+        // refresh path also pushes the corrected card back to the UX so the operator sees
+        // the real state regardless of what we decide here.
+        await publisher.PublishDeviceStateRefreshAsync(hub, command.StableDeviceKey, CancellationToken.None);
+
         var snapshot = deviceStore.GetByStableKey(command.StableDeviceKey);
         if (snapshot is not null)
         {
@@ -53,9 +57,11 @@ public sealed class TapeMediaControlService(
                 return;
             }
 
-            if (NeedsMedia(command.OperationType)
-                && (snapshot.Status == AgentTapeDeviceStatus.NoMedia
-                    || snapshot.MediaStatus == TapeMediaStatus.NoMedia))
+            // Every media op (Eject, Rewind, Space) needs a cartridge present. Eject was
+            // previously allowed through as a "harmless door unlock", but in practice
+            // OpenRead blocks for tens of seconds on an empty drive before failing.
+            if (snapshot.Status == AgentTapeDeviceStatus.NoMedia
+                || snapshot.MediaStatus == TapeMediaStatus.NoMedia)
             {
                 var now = DateTimeOffset.UtcNow;
                 await reporter.FailedAsync(hub, BuildFailed(command, now, now, "NoMedia",
@@ -160,11 +166,6 @@ public sealed class TapeMediaControlService(
             }
         }
     }
-
-    // Eject is allowed against an empty drive (no-op door unlock); Rewind / Space
-    // need a cartridge to operate on.
-    private static bool NeedsMedia(string operationType) =>
-        operationType is TapeOperationTypes.Rewind or TapeOperationTypes.Space;
 
     private static TapeOperationFailedMessage BuildFailed(
         ExecuteTapeMediaActionCommand command,

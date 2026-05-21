@@ -97,9 +97,30 @@ public sealed class TapeMediaLoaderComputeTests
             activeOperationType: null,
             lastPreflightAt: preflightAt,
             preflightError: null,
+            detectedBlockBufferSizeBytes: 65536,
             lastDoorOpenAt: null);
 
         Assert.Equal(TapeMediaStatus.Ready, status);
+    }
+
+    [Fact]
+    public void Ready_drive_with_successful_preflight_and_no_buffer_size_yields_Empty()
+    {
+        var preflightAt = DateTimeOffset.UtcNow.AddMinutes(-1);
+
+        // PreflightService leaves BlockBufferSize == 0 when no data block was read before
+        // the first filemark / EOM — the runner stores this as null. That's the cartridge-
+        // is-blank signal Compute uses to surface TapeMediaStatus.Empty.
+        var status = TapeMediaLoader.Compute(
+            AgentTapeDeviceStatus.Ready,
+            TapeGstatFlags.Online,
+            activeOperationType: null,
+            lastPreflightAt: preflightAt,
+            preflightError: null,
+            detectedBlockBufferSizeBytes: null,
+            lastDoorOpenAt: null);
+
+        Assert.Equal(TapeMediaStatus.Empty, status);
     }
 
     [Fact]

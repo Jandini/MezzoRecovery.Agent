@@ -62,6 +62,7 @@ public sealed class TapeMediaLoader(
             activeOp,
             device.LastPreflightAt,
             device.PreflightError,
+            device.DetectedBlockBufferSizeBytes,
             lastDoorOpenAt == default ? null : lastDoorOpenAt);
 
         var changed = deviceStore.UpdateMediaStatus(stableKey, computed);
@@ -94,7 +95,8 @@ public sealed class TapeMediaLoader(
         string? activeOperationType,
         DateTimeOffset? lastPreflightAt,
         string? preflightError,
-        DateTimeOffset? lastDoorOpenAt)
+        int? detectedBlockBufferSizeBytes = null,
+        DateTimeOffset? lastDoorOpenAt = null)
     {
         // 1. DR_OPEN (or the equivalent NoMedia drive status) dominates everything else —
         //    no cartridge means no lifecycle.
@@ -131,7 +133,13 @@ public sealed class TapeMediaLoader(
         if (preflightIsCurrent && preflightError is not null)
             return TapeMediaStatus.Error;
         if (preflightIsCurrent)
-            return TapeMediaStatus.Ready;
+            // PreflightService returns BlockBufferSize == 0 (mapped to null in the runner)
+            // only when no data block was read before the first filemark / EOM — i.e. the
+            // cartridge is blank. A successful preflight that read data always sets a
+            // positive buffer size, so this null-check cleanly separates the two outcomes.
+            return detectedBlockBufferSizeBytes is null
+                ? TapeMediaStatus.Empty
+                : TapeMediaStatus.Ready;
 
         // 5. Cartridge present but never identified (or stale after an eject).
         return TapeMediaStatus.Loaded;

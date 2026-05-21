@@ -30,6 +30,7 @@ public sealed class TapePreflightRunner(
     TapeDeviceLockManager locks,
     TapeOperationStateStore state,
     AgentDeviceStateStore deviceStore,
+    TapeDeviceDiscoveryService discovery,
     IOptions<TapeMediaLoaderOptions> options,
     ILogger<TapePreflightRunner> logger) : ITapePreflightTrigger
 {
@@ -97,9 +98,13 @@ public sealed class TapePreflightRunner(
             return;
         }
 
-        // Flip media status to Identifying immediately so the UI doesn't wait
-        // for the next 5s poll tick to learn that preflight has started.
-        if (deviceStore.UpdateMediaStatus(stableKey, TapeMediaStatus.Identifying))
+        // Flip both hardware Status (the chip) and MediaStatus (the lifecycle row) immediately
+        // so the UI doesn't wait for the next 5s poll tick. Mirrors the pattern in
+        // TapeReadRunner / TapeMediaControlService — every operation that holds the drive
+        // surfaces as Busy so the chip never lies.
+        var statusChanged = deviceStore.UpdateStatus(stableKey, AgentTapeDeviceStatus.Busy, "BUSY");
+        var mediaChanged = deviceStore.UpdateMediaStatus(stableKey, TapeMediaStatus.Identifying);
+        if (statusChanged || mediaChanged)
             await PublishDeviceSnapshotAsync(hub, CancellationToken.None);
 
         PreflightResult? result = null;
@@ -153,12 +158,21 @@ public sealed class TapePreflightRunner(
             logger.LogWarning("Preflight failed for device {Key}: {Message}", stableKey, error);
         }
 
+        // Re-probe the drive now that preflight has released the device file. We do this
+        // *before* removing the op from operationState so the status poller can't race in
+        // and observe the device idle with a stale Busy status (it skips probing while the
+        // op is registered). The lock is still held so no other operation can collide.
+        var refreshed = deviceStore.GetByStableKey(stableKey) ?? device;
+        var (probedStatus, probedLabels, _) = discovery.ProbeStatus(refreshed);
+
         // Order matters for callers observing state concurrently:
-        // 1) record the result (so MediaStatus computed elsewhere sees it),
-        // 2) release the busy flag,
-        // 3) set the terminal MediaStatus directly (overrides any racey Identifying writes),
-        // 4) publish a single snapshot to the API.
+        // 1) record the preflight result (so MediaStatus computed elsewhere sees it),
+        // 2) restore the real hardware status (clears the Busy chip),
+        // 3) release the busy flag,
+        // 4) set the terminal MediaStatus directly (overrides any racey Identifying writes),
+        // 5) publish a single snapshot to the API.
         deviceStore.UpdatePreflightResult(stableKey, detectedBlockSize, detectedBufferSize, error, completedAt);
+        deviceStore.UpdateStatus(stableKey, probedStatus, probedLabels);
         state.Remove(op.TapeDeviceId);
         cts.Dispose();
         deviceStore.UpdateMediaStatus(stableKey, terminal);

@@ -40,6 +40,12 @@ public sealed class AgentDeviceStateStore
                     clone.DetectedBlockBufferSizeBytes = prev.DetectedBlockBufferSizeBytes;
                     clone.LastPreflightAt = prev.LastPreflightAt;
                     clone.PreflightError = prev.PreflightError;
+                    // Settings are server-owned; re-discovery on the agent must never reset them
+                    // back to the DTO defaults, or the next preflight would auto-detect when the
+                    // user had pinned the drive to manual mode.
+                    clone.AutoDetectReadSettings = prev.AutoDetectReadSettings;
+                    clone.ReadBlockSizeBytes = prev.ReadBlockSizeBytes;
+                    clone.ReadBufferSizeBytes = prev.ReadBufferSizeBytes;
                 }
                 next.Add(clone);
             }
@@ -117,6 +123,28 @@ public sealed class AgentDeviceStateStore
     }
 
     /// <summary>
+    /// Applies user-configured read settings pushed from the API (initial sync after
+    /// ReportTapeDevices, or live UpdateTapeDeviceReadSettings commands). Returns true if any value changed.
+    /// </summary>
+    public bool UpdateReadSettings(string stableDeviceKey, bool autoDetect, int blockSize, int bufferSize)
+    {
+        lock (_gate)
+        {
+            var existing = _devices.FirstOrDefault(d => d.StableDeviceKey == stableDeviceKey);
+            if (existing is null) return false;
+            if (existing.AutoDetectReadSettings == autoDetect
+                && existing.ReadBlockSizeBytes == blockSize
+                && existing.ReadBufferSizeBytes == bufferSize)
+                return false;
+
+            existing.AutoDetectReadSettings = autoDetect;
+            existing.ReadBlockSizeBytes = blockSize;
+            existing.ReadBufferSizeBytes = bufferSize;
+            return true;
+        }
+    }
+
+    /// <summary>
     /// Sets the derived media lifecycle status. Returns true when it changed.
     /// </summary>
     public bool UpdateMediaStatus(string stableDeviceKey, TapeMediaStatus mediaStatus)
@@ -155,5 +183,8 @@ public sealed class AgentDeviceStateStore
         DetectedBlockBufferSizeBytes = d.DetectedBlockBufferSizeBytes,
         LastPreflightAt = d.LastPreflightAt,
         PreflightError = d.PreflightError,
+        AutoDetectReadSettings = d.AutoDetectReadSettings,
+        ReadBlockSizeBytes = d.ReadBlockSizeBytes,
+        ReadBufferSizeBytes = d.ReadBufferSizeBytes,
     };
 }

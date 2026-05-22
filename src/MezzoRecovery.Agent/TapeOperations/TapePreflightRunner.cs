@@ -112,12 +112,18 @@ public sealed class TapePreflightRunner(
         string? failureMessage = null;
         try
         {
+            // Always seed the buffer from the user-configured READ SETTINGS. When AutoDetect is
+            // off, we also pass the fixed block size and the Tape preflight service skips its
+            // doubling probe loop entirely (still reads up to InitialBlockCount blocks so the
+            // media-identification bytes come back).
             var request = new PreflightRequest
             {
                 TapeDevicePath = probePath,
-                // Seed with last known buffer size to skip the doubling probe loop on the
-                // re-identification of a known cartridge.
-                InitialBufferSizeBytes = device.DetectedBlockBufferSizeBytes ?? 0,
+                AutoDetect = device.AutoDetectReadSettings,
+                InitialBufferSizeBytes = device.ReadBufferSizeBytes > 0
+                    ? device.ReadBufferSizeBytes
+                    : (device.DetectedBlockBufferSizeBytes ?? 0),
+                FixedBlockSizeBytes = device.AutoDetectReadSettings ? 0 : device.ReadBlockSizeBytes,
                 InitialBlockCount = Math.Max(1, options.Value.InitialBlockCount),
                 RewindBeforeStart = options.Value.RewindBeforeStart,
             };

@@ -25,6 +25,7 @@ public sealed class AgentConnectionLoop(
     TapeReadRunner tapeReadRunner,
     TapeMediaControlService tapeMediaControl,
     StopOperationHandler stopHandler,
+    AgentDeviceStateStore deviceStore,
     ILogger? logger = null)
 {
     private readonly ILogger _logger = logger ?? NullLogger.Instance;
@@ -196,6 +197,23 @@ public sealed class AgentConnectionLoop(
                         command.OperationType,
                         command.TapeDeviceId);
                     tapeMediaControl.Execute(hub!, command);
+                    return Task.CompletedTask;
+                });
+
+                hub.On<UpdateTapeDeviceReadSettingsCommand>("UpdateTapeDeviceReadSettings", command =>
+                {
+                    var changed = deviceStore.UpdateReadSettings(
+                        command.StableDeviceKey,
+                        command.AutoDetect,
+                        command.ReadBlockSizeBytes,
+                        command.ReadBufferSizeBytes);
+                    if (changed)
+                        _logger.LogInformation(
+                            "Read settings updated for device {Key}: autoDetect={Auto} block={Block} buffer={Buffer}.",
+                            command.StableDeviceKey,
+                            command.AutoDetect,
+                            command.ReadBlockSizeBytes,
+                            command.ReadBufferSizeBytes);
                     return Task.CompletedTask;
                 });
 

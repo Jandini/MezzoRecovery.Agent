@@ -130,6 +130,17 @@ public sealed class AgentTapeDeviceDto
 
     [JsonPropertyName("preflightError")]
     public string? PreflightError { get; set; }
+
+    // User-configured per-drive read preferences. Pushed by the API after ReportTapeDevices
+    // and on every UpdateTapeDeviceReadSettings command; never sent agent->API.
+    [JsonPropertyName("autoDetectReadSettings")]
+    public bool AutoDetectReadSettings { get; set; } = true;
+
+    [JsonPropertyName("readBlockSizeBytes")]
+    public int ReadBlockSizeBytes { get; set; }
+
+    [JsonPropertyName("readBufferSizeBytes")]
+    public int ReadBufferSizeBytes { get; set; } = 65536;
 }
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
@@ -148,6 +159,7 @@ public sealed class AgentTapeDeviceDto
 [JsonSerializable(typeof(ExecuteTapeMediaActionCommand))]
 [JsonSerializable(typeof(AgentConfigCommand))]
 [JsonSerializable(typeof(RefreshTapeDeviceCommand))]
+[JsonSerializable(typeof(UpdateTapeDeviceReadSettingsCommand))]
 [JsonSerializable(typeof(TapeOperationStartedMessage))]
 [JsonSerializable(typeof(TapeOperationProgressMessage))]
 [JsonSerializable(typeof(TapeOperationCompletedMessage))]

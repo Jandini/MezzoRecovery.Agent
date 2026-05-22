@@ -17,7 +17,8 @@ internal sealed class RunCommandHandler(
     IScsiTapeDeviceManager scsiTapeDeviceManager,
     TapeReadRunner tapeReadRunner,
     TapeMediaControlService tapeMediaControl,
-    StopOperationHandler stopHandler)
+    StopOperationHandler stopHandler,
+    AgentDeviceStateStore deviceStore)
 {
     public static readonly Option<string?> Config = new("--config")
     {
@@ -51,6 +52,7 @@ internal sealed class RunCommandHandler(
             tapeReadRunner,
             tapeMediaControl,
             stopHandler,
+            deviceStore,
             loggerFactory.CreateLogger<AgentConnectionLoop>());
         await loop.RunAsync(ct);
         return 0;

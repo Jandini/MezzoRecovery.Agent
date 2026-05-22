@@ -268,8 +268,13 @@ public sealed class TapeMediaLoaderObserveTests
     private sealed class CapturingTrigger : ITapePreflightTrigger
     {
         public List<string> StartedFor { get; } = [];
-        public void Start(HubConnection hub, AgentTapeDeviceDto device) =>
+        public List<bool> RewindFlags { get; } = [];
+
+        public void Start(HubConnection hub, AgentTapeDeviceDto device, bool rewindBeforeStart = false)
+        {
             StartedFor.Add(device.StableDeviceKey);
+            RewindFlags.Add(rewindBeforeStart);
+        }
     }
 
     private static (TapeMediaLoader loader, CapturingTrigger trigger, AgentDeviceStateStore store, TapeOperationStateStore opState)
@@ -465,6 +470,36 @@ public sealed class TapeMediaLoaderObserveTests
         loader.Observe(hub: null!, fresh, TapeGstatFlags.Online, AgentTapeDeviceStatus.Ready, forcePreflight: true);
 
         Assert.Empty(trigger.StartedFor);
+    }
+
+    [Fact]
+    public void ForcePreflight_passes_rewindBeforeStart_true_to_trigger()
+    {
+        var (loader, trigger, store, _) = BuildLoader();
+        var device = BuildDevice();
+        store.ReplaceAll([device]);
+        // History present — normal auto-trigger would be suppressed; force bypasses it.
+        store.UpdatePreflightResult(device.StableDeviceKey, 32768, 65536, null, DateTimeOffset.UtcNow.AddMinutes(-1));
+
+        var fresh = store.GetByStableKey(device.StableDeviceKey)!;
+        loader.Observe(hub: null!, fresh, TapeGstatFlags.Online, AgentTapeDeviceStatus.Ready, forcePreflight: true);
+
+        Assert.Single(trigger.StartedFor);
+        Assert.True(trigger.RewindFlags[0]);
+    }
+
+    [Fact]
+    public void AutoPreflight_passes_rewindBeforeStart_false_to_trigger()
+    {
+        var (loader, trigger, store, _) = BuildLoader();
+        var device = BuildDevice();
+        store.ReplaceAll([device]);
+
+        loader.Observe(hub: null!, store.GetByStableKey(device.StableDeviceKey)!, TapeGstatFlags.Online, AgentTapeDeviceStatus.Ready);
+
+        Assert.Single(trigger.StartedFor);
+        // Auto-trigger defers rewind decision to the runner's configured default — no force.
+        Assert.False(trigger.RewindFlags[0]);
     }
 
     [Fact]

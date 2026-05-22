@@ -16,7 +16,13 @@ namespace MezzoRecovery.Agent.TapeOperations;
 /// </summary>
 public interface ITapePreflightTrigger
 {
-    void Start(HubConnection hub, AgentTapeDeviceDto device);
+    /// <param name="rewindBeforeStart">
+    /// When <c>true</c> the preflight rewinds to BOT before reading, regardless of the
+    /// configured default. Pass <c>true</c> for operator-initiated Refresh (tape may be
+    /// anywhere); leave <c>false</c> for auto-triggered preflight on first cartridge sighting
+    /// (tape is already at BOT).
+    /// </param>
+    void Start(HubConnection hub, AgentTapeDeviceDto device, bool rewindBeforeStart = false);
 }
 
 /// <summary>
@@ -51,10 +57,10 @@ public sealed class TapePreflightRunner(
             logger.LogDebug(ex, "Failed to publish device snapshot.");
         }
     }
-    public void Start(HubConnection hub, AgentTapeDeviceDto device) =>
-        _ = Task.Run(() => RunAsync(hub, device));
+    public void Start(HubConnection hub, AgentTapeDeviceDto device, bool rewindBeforeStart = false) =>
+        _ = Task.Run(() => RunAsync(hub, device, rewindBeforeStart));
 
-    private async Task RunAsync(HubConnection hub, AgentTapeDeviceDto device)
+    private async Task RunAsync(HubConnection hub, AgentTapeDeviceDto device, bool rewindBeforeStart = false)
     {
         var stableKey = device.StableDeviceKey;
         var probePath = device.NonRewindingDevicePath ?? device.LinuxDevicePath;
@@ -125,7 +131,9 @@ public sealed class TapePreflightRunner(
                     : (device.DetectedBlockBufferSizeBytes ?? 0),
                 FixedBlockSizeBytes = device.AutoDetectReadSettings ? 0 : device.ReadBlockSizeBytes,
                 InitialBlockCount = Math.Max(1, options.Value.InitialBlockCount),
-                RewindBeforeStart = options.Value.RewindBeforeStart,
+                // Refresh forces a rewind to BOT regardless of the configured default so
+                // identification always reads from the start of the tape.
+                RewindBeforeStart = rewindBeforeStart || options.Value.RewindBeforeStart,
             };
 
             logger.LogInformation("Preflight starting for device {Key} at {Path}.", stableKey, probePath);

@@ -83,7 +83,9 @@ public sealed class TapeMediaLoader(
             logger.LogInformation(
                 "Triggering preflight for device {Key} (forced={Forced}, lastPreflightAt={LastPreflight}, lastDoorOpenAt={LastDoorOpen}).",
                 stableKey, forcePreflight, device.LastPreflightAt, lastDoorOpenAt == default ? null : (DateTimeOffset?)lastDoorOpenAt);
-            trigger.Start(hub, device);
+            // Refresh (forcePreflight) rewinds before start: the tape may be anywhere.
+            // Auto-trigger leaves the decision to the configured default (tape is usually at BOT on first sighting).
+            trigger.Start(hub, device, rewindBeforeStart: forcePreflight);
         }
 
         return changed;

@@ -54,6 +54,36 @@ public sealed class TapeReadRunner(
             return;
         }
 
+        // Hardware pre-flight: refuse to read when the drive is mid-motion or has no
+        // cartridge loaded. Mirrors the gate in TapeMediaControlService — see the note
+        // there for the operator-physical-button scenario this protects against.
+        var snapshot = deviceStore.GetByStableKey(command.StableDeviceKey);
+        if (snapshot is not null)
+        {
+            if (snapshot.Status == AgentTapeDeviceStatus.Busy || snapshot.MediaStatus.IsBusy())
+            {
+                var now = DateTimeOffset.UtcNow;
+                await reporter.FailedAsync(
+                    hub,
+                    BuildFailedMessage(command, now, now, "DeviceBusy",
+                        "Device is busy with another operation.", TapeCloneStats.Empty),
+                    CancellationToken.None);
+                return;
+            }
+
+            if (snapshot.Status == AgentTapeDeviceStatus.NoMedia
+                || snapshot.MediaStatus == TapeMediaStatus.NoMedia)
+            {
+                var now = DateTimeOffset.UtcNow;
+                await reporter.FailedAsync(
+                    hub,
+                    BuildFailedMessage(command, now, now, "NoMedia",
+                        "No tape media loaded.", TapeCloneStats.Empty),
+                    CancellationToken.None);
+                return;
+            }
+        }
+
         using var deviceLock = await locks.AcquireAsync(command.StableDeviceKey, CancellationToken.None);
 
         var startedAt = DateTimeOffset.UtcNow;
@@ -102,10 +132,15 @@ public sealed class TapeReadRunner(
                 TapeBlockSizeBytes = command.TapeBlockSizeBytes,
                 BufferSizeBytes = command.BufferSizeBytes,
                 ProgressIntervalSeconds = Math.Max(0, options.Value.ProgressReportIntervalSeconds),
-                RewindAfterComplete = false,
+                // RewindAfterComplete=true so the verify service rewinds the cartridge back
+                // to BOT after the read. The phase callback below surfaces the rewind as
+                // MediaStatus.Rewinding so the operator sees the cartridge moving even
+                // while the wrapping op type is still Read.
+                RewindAfterComplete = true,
                 EjectAfterComplete = false,
             };
 
+            var stalePreflightCleared = 0;
             var progress = new Progress<TapeCloneProgress>(p =>
             {
                 var (bytes, blocks, filemarks, mbps, gbph, elapsedSec) = TapeProgressMapper.Extract(p.Stats);
@@ -116,6 +151,29 @@ public sealed class TapeReadRunner(
                 op.LastThroughputGbph = gbph;
                 op.LastElapsedSeconds = elapsedSec;
                 op.LastProgressAt = DateTimeOffset.UtcNow;
+
+                if ((bytes > 0 || blocks > 0) && Interlocked.Exchange(ref stalePreflightCleared, 1) == 0)
+                {
+                    // Reading is succeeding — record the tape as identified/readable so
+                    // MediaStatus reflects Ready (not Error or Loaded) after this op ends.
+                    // Use the command's buffer size as an approximation; a Refresh will
+                    // re-run a proper preflight if the operator needs exact block sizes.
+                    var knownBufferSize = command.BufferSizeBytes > 0 ? command.BufferSizeBytes : (int?)null;
+                    var knownBlockSize  = command.TapeBlockSizeBytes > 0 ? command.TapeBlockSizeBytes : (int?)null;
+                    if (deviceStore.UpdatePreflightResult(command.StableDeviceKey, knownBlockSize, knownBufferSize, null, DateTimeOffset.UtcNow))
+                        _ = publisher.PublishCurrentAsync(hub, CancellationToken.None);
+                }
+
+                // TapeVerifyService emits TapeClonePhase.Rewinding for both the initial rewind
+                // (before reading) and the post-op rewind. Project that onto the device card so
+                // the badge tracks the physical action rather than the wrapping op type.
+                var rewinding = p.Phase == TapeClonePhase.Rewinding;
+                if (state.SetRewindActiveByStableKey(command.StableDeviceKey, rewinding))
+                {
+                    var newStatus = rewinding ? TapeMediaStatus.Rewinding : TapeMediaStatus.Reading;
+                    if (deviceStore.UpdateMediaStatus(command.StableDeviceKey, newStatus))
+                        _ = publisher.PublishCurrentAsync(hub, CancellationToken.None);
+                }
 
                 _ = reporter.ProgressAsync(
                     hub,
@@ -181,6 +239,8 @@ public sealed class TapeReadRunner(
                 return;
             }
 
+            RecordReadError(hub, command,
+                result.ErrorMessage ?? result.FailureReason.ToString());
             await reporter.FailedAsync(
                 hub,
                 BuildFailedMessage(command, startedAt, DateTimeOffset.UtcNow,
@@ -190,6 +250,7 @@ public sealed class TapeReadRunner(
         catch (Exception ex)
         {
             logger.LogError(ex, "Tape read on device {DeviceId} failed unexpectedly.", command.TapeDeviceId);
+            RecordReadError(hub, command, ex.Message);
             await reporter.FailedAsync(
                 hub,
                 BuildFailedMessage(command, startedAt, DateTimeOffset.UtcNow, "UnexpectedError", ex.Message,
@@ -216,6 +277,21 @@ public sealed class TapeReadRunner(
                 logger.LogWarning(ex, "Post-operation device report failed for device {DeviceId}.", command.TapeDeviceId);
             }
         }
+    }
+
+    // Persist the read failure into the device's PreflightError so the UI surfaces it as
+    // the device's "last error" and MediaStatus flips to Error on the next Observe. Without
+    // this, the progress callback may have already cleared PreflightError (it writes null
+    // on the first successful block), leaving a failed read invisible on the card and
+    // letting the next op start against a device whose state still says Reading.
+    private void RecordReadError(HubConnection hub, StartTapeReadCommand command, string? error)
+    {
+        var message = string.IsNullOrWhiteSpace(error) ? "Tape read failed." : error;
+        var existing = deviceStore.GetByStableKey(command.StableDeviceKey);
+        var blockSize = existing?.DetectedBlockSizeBytes;
+        var bufferSize = existing?.DetectedBlockBufferSizeBytes;
+        if (deviceStore.UpdatePreflightResult(command.StableDeviceKey, blockSize, bufferSize, message, DateTimeOffset.UtcNow))
+            _ = publisher.PublishCurrentAsync(hub, CancellationToken.None);
     }
 
     private static TapeOperationFailedMessage BuildFailedMessage(

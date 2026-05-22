@@ -33,6 +33,40 @@ public enum AgentTapeDeviceStatus
     Unavailable = 6,
     Error = 7,
     Removed = 8,
+    CleaningRequired = 10,
+}
+
+/// <summary>
+/// Cartridge lifecycle status for the UI device card. Derived from drive flags,
+/// active tape operation, and the loader's preflight history. See <c>TapeMediaLoader</c>.
+/// </summary>
+public enum TapeMediaStatus
+{
+    Unknown = 0,
+    NoMedia = 1,
+    Loaded = 2,
+    Identifying = 3,
+    Ready = 4,
+    Error = 5,
+    Reading = 6,
+    FastForwarding = 7,
+    Rewinding = 8,
+    Ejecting = 9,
+    CleaningRequired = 10,
+    Empty = 11,
+}
+
+public static class TapeMediaStatusExtensions
+{
+    // True while the cartridge is mid-motion. Used as a pre-flight gate so the
+    // agent rejects a new operation when the hardware is already doing something
+    // (e.g. the operator pressed the physical eject button on the drive).
+    public static bool IsBusy(this TapeMediaStatus status) => status is
+        TapeMediaStatus.Identifying
+        or TapeMediaStatus.Reading
+        or TapeMediaStatus.FastForwarding
+        or TapeMediaStatus.Rewinding
+        or TapeMediaStatus.Ejecting;
 }
 
 public sealed class AgentTapeDeviceDto
@@ -81,6 +115,32 @@ public sealed class AgentTapeDeviceDto
 
     [JsonPropertyName("lastError")]
     public string? LastError { get; set; }
+
+    [JsonPropertyName("mediaStatus")]
+    public TapeMediaStatus MediaStatus { get; set; }
+
+    [JsonPropertyName("detectedBlockSizeBytes")]
+    public int? DetectedBlockSizeBytes { get; set; }
+
+    [JsonPropertyName("detectedBlockBufferSizeBytes")]
+    public int? DetectedBlockBufferSizeBytes { get; set; }
+
+    [JsonPropertyName("lastPreflightAt")]
+    public DateTimeOffset? LastPreflightAt { get; set; }
+
+    [JsonPropertyName("preflightError")]
+    public string? PreflightError { get; set; }
+
+    // User-configured per-drive read preferences. Pushed by the API after ReportTapeDevices
+    // and on every UpdateTapeDeviceReadSettings command; never sent agent->API.
+    [JsonPropertyName("autoDetectReadSettings")]
+    public bool AutoDetectReadSettings { get; set; } = true;
+
+    [JsonPropertyName("readBlockSizeBytes")]
+    public int ReadBlockSizeBytes { get; set; }
+
+    [JsonPropertyName("readBufferSizeBytes")]
+    public int ReadBufferSizeBytes { get; set; } = 65536;
 }
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
@@ -93,11 +153,13 @@ public sealed class AgentTapeDeviceDto
 [JsonSerializable(typeof(AgentCredentialFile))]
 [JsonSerializable(typeof(AgentTapeDeviceDto))]
 [JsonSerializable(typeof(AgentTapeDeviceDto[]))]
+[JsonSerializable(typeof(TapeMediaStatus))]
 [JsonSerializable(typeof(StartTapeReadCommand))]
 [JsonSerializable(typeof(StopTapeOperationCommand))]
 [JsonSerializable(typeof(ExecuteTapeMediaActionCommand))]
 [JsonSerializable(typeof(AgentConfigCommand))]
 [JsonSerializable(typeof(RefreshTapeDeviceCommand))]
+[JsonSerializable(typeof(UpdateTapeDeviceReadSettingsCommand))]
 [JsonSerializable(typeof(TapeOperationStartedMessage))]
 [JsonSerializable(typeof(TapeOperationProgressMessage))]
 [JsonSerializable(typeof(TapeOperationCompletedMessage))]

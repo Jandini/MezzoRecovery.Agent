@@ -14,6 +14,7 @@ public sealed class DeviceReportPublisher(
     TapeDeviceDiscoveryService discovery,
     AgentDeviceStateStore store,
     TapeOperationStateStore operationState,
+    TapeMediaLoader mediaLoader,
     DeviceDiscoveryOptions discoveryOptions,
     ILogger<DeviceReportPublisher> logger)
 {
@@ -31,9 +32,22 @@ public sealed class DeviceReportPublisher(
         {
             var busyKeys = operationState.SnapshotBusyStableKeys();
             var devices = discovery.DiscoverDevices(busyKeys);
+
+            // Drop loader trackers for devices that vanished between sweeps.
+            foreach (var goneKey in store.StableKeysMissingFrom(devices))
+                mediaLoader.ForgetDevice(goneKey);
+
             store.ReplaceAll(devices);
-            await hub.InvokeAsync("ReportTapeDevices", devices.ToArray(), ct);
-            logger.LogInformation("Reported {Count} tape device(s) (full discovery).", devices.Count);
+
+            // Feed the loader the post-replace snapshot so MediaStatus is recomputed and
+            // first-sighting preflight can fire on agent start (or after reconnect).
+            foreach (var device in store.Snapshot())
+                mediaLoader.Observe(hub, device, flags: null, device.Status);
+
+            // Re-snapshot in case Observe mutated MediaStatus.
+            var publish = store.Snapshot();
+            await hub.InvokeAsync("ReportTapeDevices", publish.ToArray(), ct);
+            logger.LogInformation("Reported {Count} tape device(s) (full discovery).", publish.Count);
         }
         catch (Exception ex)
         {
@@ -93,18 +107,30 @@ public sealed class DeviceReportPublisher(
     /// On-demand refresh for one drive: probe MT status when idle, push device
     /// cache, then reconcile live operations with the API.
     /// </summary>
+    /// <param name="forcePreflight">
+    /// When <c>true</c> identification is triggered regardless of preflight history — used
+    /// by the operator's explicit Refresh button so a previously-errored tape is re-identified
+    /// without needing a physical eject/reload cycle.
+    /// </param>
     public async Task PublishDeviceStateRefreshAsync(
         HubConnection hub,
         string stableDeviceKey,
-        CancellationToken ct)
+        CancellationToken ct,
+        bool forcePreflight = false)
     {
         if (!operationState.IsDeviceBusyByStableKey(stableDeviceKey))
         {
             var device = store.GetByStableKey(stableDeviceKey);
             if (device is not null)
             {
-                var (status, labels) = discovery.ProbeStatus(device);
-                if (store.UpdateStatus(stableDeviceKey, status, labels))
+                var (status, labels, flags) = discovery.ProbeStatus(device);
+                var changed = store.UpdateStatus(stableDeviceKey, status, labels);
+                // Pass the fresh DTO (with latest preflight history) into the loader so it
+                // can re-evaluate the trigger policy and recompute MediaStatus.
+                var refreshed = store.GetByStableKey(stableDeviceKey) ?? device;
+                if (mediaLoader.Observe(hub, refreshed, flags, status, forcePreflight))
+                    changed = true;
+                if (changed)
                     await PublishCurrentAsync(hub, ct);
             }
         }

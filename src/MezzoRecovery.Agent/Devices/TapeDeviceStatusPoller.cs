@@ -1,5 +1,7 @@
 using MezzoRecovery.Agent.Configuration;
+using MezzoRecovery.Agent.Contracts;
 using MezzoRecovery.Agent.TapeOperations;
+using MezzoRecovery.TapeDrive.Models;
 using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -17,6 +19,7 @@ public sealed class TapeDeviceStatusPoller(
     TapeOperationStateStore operationState,
     TapeDeviceDiscoveryService discovery,
     DeviceReportPublisher publisher,
+    TapeMediaLoader mediaLoader,
     IOptions<TapeDeviceStatusOptions> options,
     ILogger<TapeDeviceStatusPoller> logger)
 {
@@ -39,7 +42,7 @@ public sealed class TapeDeviceStatusPoller(
 
                 try
                 {
-                    if (await PollOnceAsync(ct))
+                    if (await PollOnceAsync(hub, ct))
                         await publisher.PublishCurrentAsync(hub, ct);
 
                     // Always reconcile live operations -- if the agent claims nothing
@@ -63,7 +66,7 @@ public sealed class TapeDeviceStatusPoller(
         }
     }
 
-    private Task<bool> PollOnceAsync(CancellationToken ct)
+    private Task<bool> PollOnceAsync(HubConnection hub, CancellationToken ct)
     {
         var snapshot = deviceStore.Snapshot();
         if (snapshot.Count == 0)
@@ -73,11 +76,26 @@ public sealed class TapeDeviceStatusPoller(
         foreach (var device in snapshot)
         {
             if (ct.IsCancellationRequested) break;
-            if (operationState.IsDeviceBusyByStableKey(device.StableDeviceKey))
-                continue;
 
-            var (status, labels) = discovery.ProbeStatus(device);
-            if (deviceStore.UpdateStatus(device.StableDeviceKey, status, labels))
+            AgentTapeDeviceStatus status;
+            TapeGstatFlags? flags;
+
+            if (operationState.IsDeviceBusyByStableKey(device.StableDeviceKey))
+            {
+                // Don't probe a busy device — let the in-flight operation own the device.
+                // We still feed the loader so the derived MediaStatus tracks the active op.
+                status = device.Status;
+                flags = null;
+            }
+            else
+            {
+                string? labels;
+                (status, labels, flags) = discovery.ProbeStatus(device);
+                if (deviceStore.UpdateStatus(device.StableDeviceKey, status, labels))
+                    anyChanged = true;
+            }
+
+            if (mediaLoader.Observe(hub, device, flags, status))
                 anyChanged = true;
         }
 

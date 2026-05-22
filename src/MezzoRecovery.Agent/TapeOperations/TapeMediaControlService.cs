@@ -38,6 +38,38 @@ public sealed class TapeMediaControlService(
             return;
         }
 
+        // Hardware pre-flight: re-probe the drive *now* rather than trusting the cached
+        // sweep. The cache may be many seconds stale, and acting on a stale "Ready" for a
+        // drive whose cartridge was just pulled means OpenRead blocks long enough for the
+        // UI to sit on "Ejecting · 00:28" before erroring with "No medium found". The
+        // refresh path also pushes the corrected card back to the UX so the operator sees
+        // the real state regardless of what we decide here.
+        await publisher.PublishDeviceStateRefreshAsync(hub, command.StableDeviceKey, CancellationToken.None);
+
+        var snapshot = deviceStore.GetByStableKey(command.StableDeviceKey);
+        if (snapshot is not null)
+        {
+            if (snapshot.Status == AgentTapeDeviceStatus.Busy || snapshot.MediaStatus.IsBusy())
+            {
+                var now = DateTimeOffset.UtcNow;
+                await reporter.FailedAsync(hub, BuildFailed(command, now, now, "DeviceBusy",
+                    "Device is busy with another operation."), CancellationToken.None);
+                return;
+            }
+
+            // Every media op (Eject, Rewind, Space) needs a cartridge present. Eject was
+            // previously allowed through as a "harmless door unlock", but in practice
+            // OpenRead blocks for tens of seconds on an empty drive before failing.
+            if (snapshot.Status == AgentTapeDeviceStatus.NoMedia
+                || snapshot.MediaStatus == TapeMediaStatus.NoMedia)
+            {
+                var now = DateTimeOffset.UtcNow;
+                await reporter.FailedAsync(hub, BuildFailed(command, now, now, "NoMedia",
+                    "No tape media loaded."), CancellationToken.None);
+                return;
+            }
+        }
+
         using var deviceLock = await locks.AcquireAsync(command.StableDeviceKey, CancellationToken.None);
 
         var startedAt = DateTimeOffset.UtcNow;
@@ -93,6 +125,8 @@ public sealed class TapeMediaControlService(
                     "DeviceError", $"Media action {command.OperationType} failed."), CancellationToken.None);
                 return;
             }
+
+            deviceStore.ClearPreflightResult(command.StableDeviceKey);
 
             await reporter.CompletedAsync(
                 hub,

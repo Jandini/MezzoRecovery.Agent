@@ -52,7 +52,7 @@ public sealed class TapeDeviceDiscoveryService(
                 }
                 else
                 {
-                    (status, mtStatusLabels) = ProbeTapeStatus(probePath, accessible);
+                    (status, mtStatusLabels, _) = ProbeTapeStatus(probePath, accessible);
                 }
 
                 result.Add(new AgentTapeDeviceDto
@@ -90,21 +90,27 @@ public sealed class TapeDeviceDiscoveryService(
     /// Lightweight, non-blocking status probe used by the status poller. Same
     /// classification as the discovery sweep but expressed as a single call so
     /// the poller never re-enumerates SCSI devices for the live tick.
+    /// <para>
+    /// Returns the raw <see cref="TapeGstatFlags"/> from MTIOCGET as the third tuple slot so
+    /// callers (<c>TapeMediaLoader</c>) can detect <c>DR_OPEN</c> transitions precisely
+    /// rather than re-parsing the label string. <c>null</c> when MTIOCGET did not run
+    /// (non-Linux, EIO recovery, or probe failure).
+    /// </para>
     /// </summary>
-    public (AgentTapeDeviceStatus Status, string? MtStatusLabels) ProbeStatus(AgentTapeDeviceDto device)
+    public (AgentTapeDeviceStatus Status, string? MtStatusLabels, TapeGstatFlags? Flags) ProbeStatus(AgentTapeDeviceDto device)
     {
         var probePath = device.NonRewindingDevicePath ?? device.LinuxDevicePath;
         var accessible = CheckAccessible(device.LinuxDevicePath);
         return ProbeTapeStatus(probePath, accessible);
     }
 
-    private (AgentTapeDeviceStatus Status, string? MtStatusLabels) ProbeTapeStatus(string probePath, bool accessible)
+    private (AgentTapeDeviceStatus Status, string? MtStatusLabels, TapeGstatFlags? Flags) ProbeTapeStatus(string probePath, bool accessible)
     {
         if (!accessible)
-            return (AgentTapeDeviceStatus.Unavailable, null);
+            return (AgentTapeDeviceStatus.Unavailable, null, null);
 
         if (!OperatingSystem.IsLinux())
-            return (AgentTapeDeviceStatus.Present, null);
+            return (AgentTapeDeviceStatus.Present, null, null);
 
         try
         {
@@ -114,12 +120,15 @@ public sealed class TapeDeviceDiscoveryService(
                 var labels = NullIfEmpty(TapeGstatLabels.FormatShort(probe.Status.GstatFlags));
                 var flags = probe.Status.GstatFlags;
                 if (flags.HasFlag(TapeGstatFlags.DoorOpen))
-                    return (AgentTapeDeviceStatus.NoMedia, labels);
+                    return (AgentTapeDeviceStatus.NoMedia, labels, flags);
 
                 if (!flags.HasFlag(TapeGstatFlags.Online))
-                    return (AgentTapeDeviceStatus.Busy, labels);
+                    return (AgentTapeDeviceStatus.Busy, labels, flags);
 
-                return (AgentTapeDeviceStatus.Ready, labels);
+                if (flags.HasFlag(TapeGstatFlags.CleaningRequested))
+                    return (AgentTapeDeviceStatus.CleaningRequired, labels, flags);
+
+                return (AgentTapeDeviceStatus.Ready, labels, flags);
             }
 
             // EIO (errno 5): the device node exists but MTIOCGET failed - likely a stale/disconnected
@@ -143,11 +152,11 @@ public sealed class TapeDeviceDiscoveryService(
                 _ => AgentTapeDeviceStatus.Present,
             };
 
-            return (status, mtLabels);
+            return (status, mtLabels, null);
         }
         catch
         {
-            return (AgentTapeDeviceStatus.Present, null);
+            return (AgentTapeDeviceStatus.Present, null, null);
         }
     }
 
@@ -156,7 +165,7 @@ public sealed class TapeDeviceDiscoveryService(
     /// Attempts to remove the stale SCSI device via sysfs, then re-probes.
     /// The device will either recover (probe succeeds) or disappear (Unavailable).
     /// </summary>
-    private (AgentTapeDeviceStatus Status, string? MtStatusLabels) TryRecoverEioDevice(string probePath)
+    private (AgentTapeDeviceStatus Status, string? MtStatusLabels, TapeGstatFlags? Flags) TryRecoverEioDevice(string probePath)
     {
         var nstName = Path.GetFileName(probePath); // e.g. "nst2"
         logger.LogWarning(
@@ -171,7 +180,7 @@ public sealed class TapeDeviceDiscoveryService(
             logger.LogWarning(
                 "Could not find SCSI address for {DeviceName} in sysfs - skipping removal, classifying as disconnected.",
                 nstName);
-            return (AgentTapeDeviceStatus.Unavailable, "DISCONNECTED");
+            return (AgentTapeDeviceStatus.Unavailable, "DISCONNECTED", null);
         }
 
         logger.LogInformation(
@@ -184,7 +193,7 @@ public sealed class TapeDeviceDiscoveryService(
             logger.LogWarning(
                 "Failed to remove SCSI device {ScsiAddress} - root access may be required. Classifying {DeviceName} as disconnected.",
                 match.ScsiAddress, match.DeviceName);
-            return (AgentTapeDeviceStatus.Unavailable, "DISCONNECTED");
+            return (AgentTapeDeviceStatus.Unavailable, "DISCONNECTED", null);
         }
 
         logger.LogInformation(
@@ -199,7 +208,7 @@ public sealed class TapeDeviceDiscoveryService(
             logger.LogInformation(
                 "Device {DevicePath} is no longer accessible after SCSI removal - treated as removed.",
                 probePath);
-            return (AgentTapeDeviceStatus.Unavailable, null);
+            return (AgentTapeDeviceStatus.Unavailable, null, null);
         }
 
         try
@@ -211,20 +220,22 @@ public sealed class TapeDeviceDiscoveryService(
                 var flags = retry.Status.GstatFlags;
                 logger.LogInformation("Re-probe of {DevicePath} succeeded after SCSI removal.", probePath);
                 if (flags.HasFlag(TapeGstatFlags.DoorOpen))
-                    return (AgentTapeDeviceStatus.NoMedia, labels);
+                    return (AgentTapeDeviceStatus.NoMedia, labels, flags);
                 if (!flags.HasFlag(TapeGstatFlags.Online))
-                    return (AgentTapeDeviceStatus.Busy, labels);
-                return (AgentTapeDeviceStatus.Ready, labels);
+                    return (AgentTapeDeviceStatus.Busy, labels, flags);
+                if (flags.HasFlag(TapeGstatFlags.CleaningRequested))
+                    return (AgentTapeDeviceStatus.CleaningRequired, labels, flags);
+                return (AgentTapeDeviceStatus.Ready, labels, flags);
             }
 
             logger.LogInformation(
                 "Re-probe of {DevicePath} still failed (errno {Errno}) after SCSI removal - classifying as unavailable.",
                 probePath, retry.Errno);
-            return (AgentTapeDeviceStatus.Unavailable, null);
+            return (AgentTapeDeviceStatus.Unavailable, null, null);
         }
         catch
         {
-            return (AgentTapeDeviceStatus.Unavailable, null);
+            return (AgentTapeDeviceStatus.Unavailable, null, null);
         }
     }
 

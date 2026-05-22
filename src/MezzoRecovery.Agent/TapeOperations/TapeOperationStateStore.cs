@@ -23,6 +23,51 @@ public sealed class TapeOperationStateStore
         return false;
     }
 
+    /// <summary>
+    /// Returns the active operation type for the given stable key, or null when the device
+    /// is idle. Used by <c>TapeMediaLoader</c> to project the current operation into the
+    /// derived <c>TapeMediaStatus</c>.
+    /// </summary>
+    public string? GetActiveOperationTypeByStableKey(string stableDeviceKey)
+    {
+        foreach (var op in _byDevice.Values)
+            if (string.Equals(op.StableDeviceKey, stableDeviceKey, StringComparison.Ordinal))
+                return op.OperationType;
+        return null;
+    }
+
+    /// <summary>
+    /// True when the active operation for <paramref name="stableDeviceKey"/> is currently
+    /// in a rewind sub-step (set by the runner around <c>TryRewind</c> calls inside
+    /// Preflight or Read). Lets <c>TapeMediaLoader</c> surface <c>TapeMediaStatus.Rewinding</c>
+    /// even though the wrapping operation is Preflight/Read.
+    /// </summary>
+    public bool IsRewindActiveByStableKey(string stableDeviceKey)
+    {
+        foreach (var op in _byDevice.Values)
+            if (string.Equals(op.StableDeviceKey, stableDeviceKey, StringComparison.Ordinal))
+                return op.IsRewindActive;
+        return false;
+    }
+
+    /// <summary>
+    /// Flips the active operation's rewind sub-phase flag. Returns true when the flag
+    /// actually changed value (so the caller can avoid republishing on no-op writes).
+    /// </summary>
+    public bool SetRewindActiveByStableKey(string stableDeviceKey, bool isRewindActive)
+    {
+        foreach (var op in _byDevice.Values)
+        {
+            if (string.Equals(op.StableDeviceKey, stableDeviceKey, StringComparison.Ordinal))
+            {
+                if (op.IsRewindActive == isRewindActive) return false;
+                op.IsRewindActive = isRewindActive;
+                return true;
+            }
+        }
+        return false;
+    }
+
     public IReadOnlySet<string> SnapshotBusyStableKeys()
     {
         var set = new HashSet<string>(StringComparer.Ordinal);
@@ -45,6 +90,10 @@ public sealed class TapeOperationStateStore
 
     public ActiveOperationSnapshot[] BuildSnapshots() =>
         _byDevice.Values
+            // Preflight is agent-initiated and uses a synthetic TapeDeviceId Guid.
+            // The API never issued it and has no record of the Guid, so omit it from the
+            // wire snapshot. The UI learns about preflight via TapeMediaStatus.Identifying instead.
+            .Where(s => !string.Equals(s.OperationType, TapeOperationTypes.Preflight, StringComparison.Ordinal))
             .Select(s => new ActiveOperationSnapshot(
                 s.TapeDeviceId,
                 s.OperationType,
@@ -90,6 +139,11 @@ public sealed class TapeOperationStateStore
         public double LastThroughputGbph;
         public long LastElapsedSeconds;
         public DateTimeOffset? LastProgressAt;
+
+        // Set by the runner while the underlying service is in a rewind sub-step.
+        // volatile because flips happen on a worker thread but are read from the
+        // status poller thread via TapeMediaLoader.Observe.
+        public volatile bool IsRewindActive;
 
         public void RequestStop()
         {

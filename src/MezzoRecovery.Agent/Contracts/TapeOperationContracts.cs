@@ -31,6 +31,12 @@ public sealed record RefreshTapeDeviceCommand(
     [property: JsonPropertyName("tapeDeviceId")] Guid TapeDeviceId,
     [property: JsonPropertyName("stableDeviceKey")] string StableDeviceKey);
 
+public sealed record UpdateTapeDeviceReadSettingsCommand(
+    [property: JsonPropertyName("stableDeviceKey")] string StableDeviceKey,
+    [property: JsonPropertyName("autoDetect")] bool AutoDetect,
+    [property: JsonPropertyName("readBlockSizeBytes")] int ReadBlockSizeBytes,
+    [property: JsonPropertyName("readBufferSizeBytes")] int ReadBufferSizeBytes);
+
 public sealed record AgentConfigCommand(
     [property: JsonPropertyName("tapeCacheDirectory")] string? TapeCacheDirectory);
 
@@ -120,4 +126,5 @@ public static class TapeOperationTypes
     public const string Rewind = "Rewind";
     public const string Eject = "Eject";
     public const string Space = "Space";
+    public const string Preflight = "Preflight";
 }

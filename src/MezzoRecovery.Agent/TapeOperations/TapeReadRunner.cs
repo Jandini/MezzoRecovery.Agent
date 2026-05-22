@@ -239,6 +239,8 @@ public sealed class TapeReadRunner(
                 return;
             }
 
+            RecordReadError(hub, command,
+                result.ErrorMessage ?? result.FailureReason.ToString());
             await reporter.FailedAsync(
                 hub,
                 BuildFailedMessage(command, startedAt, DateTimeOffset.UtcNow,
@@ -248,6 +250,7 @@ public sealed class TapeReadRunner(
         catch (Exception ex)
         {
             logger.LogError(ex, "Tape read on device {DeviceId} failed unexpectedly.", command.TapeDeviceId);
+            RecordReadError(hub, command, ex.Message);
             await reporter.FailedAsync(
                 hub,
                 BuildFailedMessage(command, startedAt, DateTimeOffset.UtcNow, "UnexpectedError", ex.Message,
@@ -274,6 +277,21 @@ public sealed class TapeReadRunner(
                 logger.LogWarning(ex, "Post-operation device report failed for device {DeviceId}.", command.TapeDeviceId);
             }
         }
+    }
+
+    // Persist the read failure into the device's PreflightError so the UI surfaces it as
+    // the device's "last error" and MediaStatus flips to Error on the next Observe. Without
+    // this, the progress callback may have already cleared PreflightError (it writes null
+    // on the first successful block), leaving a failed read invisible on the card and
+    // letting the next op start against a device whose state still says Reading.
+    private void RecordReadError(HubConnection hub, StartTapeReadCommand command, string? error)
+    {
+        var message = string.IsNullOrWhiteSpace(error) ? "Tape read failed." : error;
+        var existing = deviceStore.GetByStableKey(command.StableDeviceKey);
+        var blockSize = existing?.DetectedBlockSizeBytes;
+        var bufferSize = existing?.DetectedBlockBufferSizeBytes;
+        if (deviceStore.UpdatePreflightResult(command.StableDeviceKey, blockSize, bufferSize, message, DateTimeOffset.UtcNow))
+            _ = publisher.PublishCurrentAsync(hub, CancellationToken.None);
     }
 
     private static TapeOperationFailedMessage BuildFailedMessage(

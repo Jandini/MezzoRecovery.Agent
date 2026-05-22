@@ -39,11 +39,16 @@ public sealed class TapeMediaLoader(
     /// Returns <c>true</c> when the device's <see cref="AgentTapeDeviceDto.MediaStatus"/> changed
     /// (the caller can use this to decide whether to publish).
     /// </summary>
+    /// <param name="forcePreflight">
+    /// When <c>true</c> the normal history-based suppression is bypassed and preflight is
+    /// started as long as the drive is ready and not already busy (e.g. explicit Refresh).
+    /// </param>
     public bool Observe(
         HubConnection hub,
         AgentTapeDeviceDto device,
         TapeGstatFlags? flags,
-        AgentTapeDeviceStatus driveStatus)
+        AgentTapeDeviceStatus driveStatus,
+        bool forcePreflight = false)
     {
         var stableKey = device.StableDeviceKey;
         if (string.IsNullOrEmpty(stableKey))
@@ -69,11 +74,15 @@ public sealed class TapeMediaLoader(
 
         var changed = deviceStore.UpdateMediaStatus(stableKey, computed);
 
-        if (ShouldTriggerPreflight(driveStatus, flags, activeOp, device, lastDoorOpenAt))
+        var shouldStart = forcePreflight
+            ? CanStartPreflight(driveStatus, flags, activeOp, device)
+            : ShouldTriggerPreflight(driveStatus, flags, activeOp, device, lastDoorOpenAt);
+
+        if (shouldStart)
         {
             logger.LogInformation(
-                "Triggering preflight for device {Key} (lastPreflightAt={LastPreflight}, lastDoorOpenAt={LastDoorOpen}).",
-                stableKey, device.LastPreflightAt, lastDoorOpenAt == default ? null : (DateTimeOffset?)lastDoorOpenAt);
+                "Triggering preflight for device {Key} (forced={Forced}, lastPreflightAt={LastPreflight}, lastDoorOpenAt={LastDoorOpen}).",
+                stableKey, forcePreflight, device.LastPreflightAt, lastDoorOpenAt == default ? null : (DateTimeOffset?)lastDoorOpenAt);
             trigger.Start(hub, device);
         }
 
@@ -145,13 +154,18 @@ public sealed class TapeMediaLoader(
         if (preflightIsCurrent && preflightError is not null)
             return TapeMediaStatus.Error;
         if (preflightIsCurrent)
-            // PreflightService returns BlockBufferSize == 0 (mapped to null in the runner)
-            // only when no data block was read before the first filemark / EOM — i.e. the
-            // cartridge is blank. A successful preflight that read data always sets a
-            // positive buffer size, so this null-check cleanly separates the two outcomes.
-            return detectedBlockBufferSizeBytes is null
-                ? TapeMediaStatus.Empty
-                : TapeMediaStatus.Ready;
+            // Three-way sentinel:
+            //   > 0  — preflight found data at this buffer size  → Ready
+            //     0  — preflight succeeded but read no blocks    → Empty (confirmed blank tape)
+            //  null  — preflight state was cleared by a transport operation; cartridge is
+            //          present and the drive was last seen ready, but identification has not
+            //          been re-run. Surface as Loaded so the operator knows to run Refresh.
+            return detectedBlockBufferSizeBytes switch
+            {
+                > 0 => TapeMediaStatus.Ready,
+                0   => TapeMediaStatus.Empty,
+                _   => TapeMediaStatus.Loaded,
+            };
 
         // 5. Cartridge present but never identified (or stale after an eject).
         return TapeMediaStatus.Loaded;
@@ -164,11 +178,7 @@ public sealed class TapeMediaLoader(
         AgentTapeDeviceDto device,
         DateTimeOffset lastDoorOpenAt)
     {
-        if (!options.Value.Enabled) return false;
-        if (driveStatus != AgentTapeDeviceStatus.Ready) return false;
-        if (flags is { } f && f.HasFlag(TapeGstatFlags.DoorOpen)) return false;
-        if (activeOp is not null) return false;
-        if (string.IsNullOrWhiteSpace(device.NonRewindingDevicePath ?? device.LinuxDevicePath)) return false;
+        if (!CanStartPreflight(driveStatus, flags, activeOp, device)) return false;
 
         // Fire when:
         //  a) the device has never been identified in this agent process (first sighting), OR
@@ -177,5 +187,24 @@ public sealed class TapeMediaLoader(
         if (lastDoorOpenAt != default && lastDoorOpenAt > device.LastPreflightAt) return true;
 
         return false;
+    }
+
+    /// <summary>
+    /// Checks whether the drive is currently in a state where preflight CAN be started
+    /// (ready, idle, has a path, and preflight is enabled). Used by both the automatic
+    /// trigger policy and the forced Refresh path.
+    /// </summary>
+    private bool CanStartPreflight(
+        AgentTapeDeviceStatus driveStatus,
+        TapeGstatFlags? flags,
+        string? activeOp,
+        AgentTapeDeviceDto device)
+    {
+        if (!options.Value.Enabled) return false;
+        if (driveStatus != AgentTapeDeviceStatus.Ready) return false;
+        if (flags is { } f && f.HasFlag(TapeGstatFlags.DoorOpen)) return false;
+        if (activeOp is not null) return false;
+        if (string.IsNullOrWhiteSpace(device.NonRewindingDevicePath ?? device.LinuxDevicePath)) return false;
+        return true;
     }
 }

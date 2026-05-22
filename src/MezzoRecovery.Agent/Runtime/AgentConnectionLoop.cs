@@ -149,7 +149,8 @@ public sealed class AgentConnectionLoop(
                         await reportPublisher.PublishDeviceStateRefreshAsync(
                             hub!,
                             command.StableDeviceKey,
-                            CancellationToken.None);
+                            CancellationToken.None,
+                            forcePreflight: true);
                     }
                     catch (Exception ex)
                     {

@@ -104,13 +104,31 @@ public sealed class TapeMediaLoaderComputeTests
     }
 
     [Fact]
-    public void Ready_drive_with_successful_preflight_and_no_buffer_size_yields_Empty()
+    public void Ready_drive_with_blank_tape_preflight_yields_Empty()
     {
         var preflightAt = DateTimeOffset.UtcNow.AddMinutes(-1);
 
-        // PreflightService leaves BlockBufferSize == 0 when no data block was read before
-        // the first filemark / EOM — the runner stores this as null. That's the cartridge-
-        // is-blank signal Compute uses to surface TapeMediaStatus.Empty.
+        // TapePreflightRunner stores 0 (not null) when no data block was read — that is
+        // the confirmed-blank-tape sentinel.  Compute maps 0 → Empty.
+        var status = TapeMediaLoader.Compute(
+            AgentTapeDeviceStatus.Ready,
+            TapeGstatFlags.Online,
+            activeOperationType: null,
+            lastPreflightAt: preflightAt,
+            preflightError: null,
+            detectedBlockBufferSizeBytes: 0,
+            lastDoorOpenAt: null);
+
+        Assert.Equal(TapeMediaStatus.Empty, status);
+    }
+
+    [Fact]
+    public void Ready_drive_with_cleared_preflight_state_yields_Loaded()
+    {
+        var preflightAt = DateTimeOffset.UtcNow.AddMinutes(-1);
+
+        // After ClearPreflightResult stamps LastPreflightAt=UtcNow and sets buffer to null,
+        // the drive is known-present but not yet re-identified → Loaded.
         var status = TapeMediaLoader.Compute(
             AgentTapeDeviceStatus.Ready,
             TapeGstatFlags.Online,
@@ -120,7 +138,7 @@ public sealed class TapeMediaLoaderComputeTests
             detectedBlockBufferSizeBytes: null,
             lastDoorOpenAt: null);
 
-        Assert.Equal(TapeMediaStatus.Empty, status);
+        Assert.Equal(TapeMediaStatus.Loaded, status);
     }
 
     [Fact]
@@ -351,8 +369,10 @@ public sealed class TapeMediaLoaderObserveTests
 
         loader.Observe(hub: null!, store.GetByStableKey(device.StableDeviceKey)!, TapeGstatFlags.Online, AgentTapeDeviceStatus.Ready);
         var cleared = store.GetByStableKey(device.StableDeviceKey)!;
+        // ClearPreflightResult stamps LastPreflightAt=UtcNow (prevents auto-retrigger) and
+        // wipes PreflightError + detected sizes. Compute returns Loaded (null buffer sentinel).
         Assert.Equal(TapeMediaStatus.Loaded, cleared.MediaStatus);
-        Assert.Null(cleared.LastPreflightAt);
+        Assert.NotNull(cleared.LastPreflightAt);
         Assert.Null(cleared.PreflightError);
         Assert.Null(cleared.DetectedBlockSizeBytes);
         Assert.Null(cleared.DetectedBlockBufferSizeBytes);
@@ -404,6 +424,45 @@ public sealed class TapeMediaLoaderObserveTests
         store.ReplaceAll([device]);
 
         loader.Observe(hub: null!, store.GetByStableKey(device.StableDeviceKey)!, TapeGstatFlags.Online, AgentTapeDeviceStatus.Ready);
+
+        Assert.Empty(trigger.StartedFor);
+    }
+
+    [Fact]
+    public void ForcePreflight_triggers_even_when_preflight_history_is_present()
+    {
+        var (loader, trigger, store, _) = BuildLoader();
+        var device = BuildDevice();
+        store.ReplaceAll([device]);
+        // Simulate a recent successful preflight so the normal auto-trigger would be suppressed.
+        store.UpdatePreflightResult(device.StableDeviceKey, 32768, 65536, null, DateTimeOffset.UtcNow.AddMinutes(-1));
+
+        var fresh = store.GetByStableKey(device.StableDeviceKey)!;
+        loader.Observe(hub: null!, fresh, TapeGstatFlags.Online, AgentTapeDeviceStatus.Ready, forcePreflight: true);
+
+        Assert.Single(trigger.StartedFor);
+        Assert.Equal(device.StableDeviceKey, trigger.StartedFor[0]);
+    }
+
+    [Fact]
+    public void ForcePreflight_is_suppressed_when_device_is_busy()
+    {
+        var (loader, trigger, store, opState) = BuildLoader();
+        var device = BuildDevice();
+        store.ReplaceAll([device]);
+
+        opState.TryRegister(new TapeOperationStateStore.RunningOperation(
+            tapeDeviceId: Guid.NewGuid(),
+            stableDeviceKey: device.StableDeviceKey,
+            operationType: TapeOperationTypes.Read,
+            requestedByUserId: Guid.Empty,
+            startedAt: DateTimeOffset.UtcNow,
+            blockSizeBytes: 0,
+            bufferSizeBytes: 0,
+            cts: new CancellationTokenSource()));
+
+        var fresh = store.GetByStableKey(device.StableDeviceKey)!;
+        loader.Observe(hub: null!, fresh, TapeGstatFlags.Online, AgentTapeDeviceStatus.Ready, forcePreflight: true);
 
         Assert.Empty(trigger.StartedFor);
     }

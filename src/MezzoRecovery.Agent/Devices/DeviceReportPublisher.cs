@@ -107,10 +107,16 @@ public sealed class DeviceReportPublisher(
     /// On-demand refresh for one drive: probe MT status when idle, push device
     /// cache, then reconcile live operations with the API.
     /// </summary>
+    /// <param name="forcePreflight">
+    /// When <c>true</c> identification is triggered regardless of preflight history — used
+    /// by the operator's explicit Refresh button so a previously-errored tape is re-identified
+    /// without needing a physical eject/reload cycle.
+    /// </param>
     public async Task PublishDeviceStateRefreshAsync(
         HubConnection hub,
         string stableDeviceKey,
-        CancellationToken ct)
+        CancellationToken ct,
+        bool forcePreflight = false)
     {
         if (!operationState.IsDeviceBusyByStableKey(stableDeviceKey))
         {
@@ -122,7 +128,7 @@ public sealed class DeviceReportPublisher(
                 // Pass the fresh DTO (with latest preflight history) into the loader so it
                 // can re-evaluate the trigger policy and recompute MediaStatus.
                 var refreshed = store.GetByStableKey(stableDeviceKey) ?? device;
-                if (mediaLoader.Observe(hub, refreshed, flags, status))
+                if (mediaLoader.Observe(hub, refreshed, flags, status, forcePreflight))
                     changed = true;
                 if (changed)
                     await PublishCurrentAsync(hub, ct);

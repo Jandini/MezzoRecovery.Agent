@@ -166,7 +166,9 @@ public sealed class TapePreflightRunner(
         if (result is not null && result.IsReadable)
         {
             detectedBlockSize = result.BlockSize > 0 ? result.BlockSize : null;
-            detectedBufferSize = result.BlockBufferSize > 0 ? result.BlockBufferSize : null;
+            // Use 0 (not null) for blank tape so TapeMediaLoader.Compute can distinguish
+            // "confirmed blank cartridge" (0) from "state cleared by transport" (null).
+            detectedBufferSize = result.IsEmpty ? 0 : (result.BlockBufferSize > 0 ? result.BlockBufferSize : null);
             error = null;
             terminal = result.IsEmpty ? TapeMediaStatus.Empty : TapeMediaStatus.Ready;
             logger.LogInformation(

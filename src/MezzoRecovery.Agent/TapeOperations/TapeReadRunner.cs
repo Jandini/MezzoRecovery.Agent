@@ -154,7 +154,13 @@ public sealed class TapeReadRunner(
 
                 if ((bytes > 0 || blocks > 0) && Interlocked.Exchange(ref stalePreflightCleared, 1) == 0)
                 {
-                    if (deviceStore.ClearPreflightResult(command.StableDeviceKey))
+                    // Reading is succeeding — record the tape as identified/readable so
+                    // MediaStatus reflects Ready (not Error or Loaded) after this op ends.
+                    // Use the command's buffer size as an approximation; a Refresh will
+                    // re-run a proper preflight if the operator needs exact block sizes.
+                    var knownBufferSize = command.BufferSizeBytes > 0 ? command.BufferSizeBytes : (int?)null;
+                    var knownBlockSize  = command.TapeBlockSizeBytes > 0 ? command.TapeBlockSizeBytes : (int?)null;
+                    if (deviceStore.UpdatePreflightResult(command.StableDeviceKey, knownBlockSize, knownBufferSize, null, DateTimeOffset.UtcNow))
                         _ = publisher.PublishCurrentAsync(hub, CancellationToken.None);
                 }
 

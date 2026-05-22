@@ -123,8 +123,12 @@ public sealed class AgentDeviceStateStore
     }
 
     /// <summary>
-    /// Clears stale preflight-derived media state after another operation proves the
-    /// cartridge is usable or absent.
+    /// Clears stale preflight error state after a successful transport or read operation.
+    /// Detected sizes and <see cref="AgentTapeDeviceDto.PreflightError"/> are wiped, and
+    /// <see cref="AgentTapeDeviceDto.LastPreflightAt"/> is stamped to the current wall-clock
+    /// time so <c>TapeMediaLoader.ShouldTriggerPreflight</c> does not re-fire automatically
+    /// (the drive is still the same cartridge; a door-open cycle or explicit Refresh will
+    /// trigger the next identification).
     /// </summary>
     public bool ClearPreflightResult(string stableDeviceKey)
     {
@@ -134,14 +138,13 @@ public sealed class AgentDeviceStateStore
             if (existing is null) return false;
             if (existing.DetectedBlockSizeBytes is null
                 && existing.DetectedBlockBufferSizeBytes is null
-                && existing.LastPreflightAt is null
                 && existing.PreflightError is null)
                 return false;
 
             existing.DetectedBlockSizeBytes = null;
             existing.DetectedBlockBufferSizeBytes = null;
-            existing.LastPreflightAt = null;
             existing.PreflightError = null;
+            existing.LastPreflightAt = DateTimeOffset.UtcNow;
             return true;
         }
     }

@@ -140,6 +140,7 @@ public sealed class TapeReadRunner(
                 EjectAfterComplete = false,
             };
 
+            var stalePreflightCleared = 0;
             var progress = new Progress<TapeCloneProgress>(p =>
             {
                 var (bytes, blocks, filemarks, mbps, gbph, elapsedSec) = TapeProgressMapper.Extract(p.Stats);
@@ -150,6 +151,12 @@ public sealed class TapeReadRunner(
                 op.LastThroughputGbph = gbph;
                 op.LastElapsedSeconds = elapsedSec;
                 op.LastProgressAt = DateTimeOffset.UtcNow;
+
+                if ((bytes > 0 || blocks > 0) && Interlocked.Exchange(ref stalePreflightCleared, 1) == 0)
+                {
+                    if (deviceStore.ClearPreflightResult(command.StableDeviceKey))
+                        _ = publisher.PublishCurrentAsync(hub, CancellationToken.None);
+                }
 
                 // TapeVerifyService emits TapeClonePhase.Rewinding for both the initial rewind
                 // (before reading) and the post-op rewind. Project that onto the device card so

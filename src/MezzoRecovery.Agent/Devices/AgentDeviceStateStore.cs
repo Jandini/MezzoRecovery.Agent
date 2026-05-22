@@ -123,6 +123,30 @@ public sealed class AgentDeviceStateStore
     }
 
     /// <summary>
+    /// Clears stale preflight-derived media state after another operation proves the
+    /// cartridge is usable or absent.
+    /// </summary>
+    public bool ClearPreflightResult(string stableDeviceKey)
+    {
+        lock (_gate)
+        {
+            var existing = _devices.FirstOrDefault(d => d.StableDeviceKey == stableDeviceKey);
+            if (existing is null) return false;
+            if (existing.DetectedBlockSizeBytes is null
+                && existing.DetectedBlockBufferSizeBytes is null
+                && existing.LastPreflightAt is null
+                && existing.PreflightError is null)
+                return false;
+
+            existing.DetectedBlockSizeBytes = null;
+            existing.DetectedBlockBufferSizeBytes = null;
+            existing.LastPreflightAt = null;
+            existing.PreflightError = null;
+            return true;
+        }
+    }
+
+    /// <summary>
     /// Applies user-configured read settings pushed from the API (initial sync after
     /// ReportTapeDevices, or live UpdateTapeDeviceReadSettings commands). Returns true if any value changed.
     /// </summary>

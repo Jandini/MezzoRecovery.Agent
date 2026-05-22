@@ -337,6 +337,28 @@ public sealed class TapeMediaLoaderObserveTests
     }
 
     [Fact]
+    public void Clearing_preflight_result_stops_error_projection()
+    {
+        var (loader, _, store, _) = BuildLoader(enabled: false);
+        var device = BuildDevice();
+        store.ReplaceAll([device]);
+        store.UpdatePreflightResult(device.StableDeviceKey, null, null, "unreadable", DateTimeOffset.UtcNow.AddMinutes(-1));
+
+        loader.Observe(hub: null!, store.GetByStableKey(device.StableDeviceKey)!, TapeGstatFlags.Online, AgentTapeDeviceStatus.Ready);
+        Assert.Equal(TapeMediaStatus.Error, store.GetByStableKey(device.StableDeviceKey)!.MediaStatus);
+
+        Assert.True(store.ClearPreflightResult(device.StableDeviceKey));
+
+        loader.Observe(hub: null!, store.GetByStableKey(device.StableDeviceKey)!, TapeGstatFlags.Online, AgentTapeDeviceStatus.Ready);
+        var cleared = store.GetByStableKey(device.StableDeviceKey)!;
+        Assert.Equal(TapeMediaStatus.Loaded, cleared.MediaStatus);
+        Assert.Null(cleared.LastPreflightAt);
+        Assert.Null(cleared.PreflightError);
+        Assert.Null(cleared.DetectedBlockSizeBytes);
+        Assert.Null(cleared.DetectedBlockBufferSizeBytes);
+    }
+
+    [Fact]
     public void Failed_preflight_clears_after_door_open_cycle()
     {
         var (loader, trigger, store, _) = BuildLoader();

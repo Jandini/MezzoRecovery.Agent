@@ -126,6 +126,8 @@ public sealed class TapeMediaControlService(
                 return;
             }
 
+            deviceStore.ClearPreflightResult(command.StableDeviceKey);
+
             await reporter.CompletedAsync(
                 hub,
                 new TapeOperationCompletedMessage(

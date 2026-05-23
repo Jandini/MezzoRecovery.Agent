@@ -237,6 +237,7 @@ public sealed class AgentConnectionLoop(
                 await ReportCacheStatusAsync(hub, ct);
                 await reportPublisher.PublishFullDiscoveryAsync(hub, ct);
                 await reportPublisher.PublishActiveOperationsAsync(hub, ct);
+                _ = RescanOnStartupAsync(hub, ct);
 
                 using var heartbeatCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 var heartbeatTask = HeartbeatLoopAsync(hub, hostname, os, arch, version, heartbeatCts.Token);
@@ -282,6 +283,26 @@ public sealed class AgentConnectionLoop(
                 if (hub is not null)
                     await hub.DisposeAsync();
             }
+        }
+    }
+
+    private async Task RescanOnStartupAsync(HubConnection hub, CancellationToken ct)
+    {
+        try
+        {
+            _logger.LogInformation("Post-startup SCSI rescan started.");
+            RemoveStaleScsiTapeDevices();
+            scsiEnumerator.ScanScsiHosts();
+            _logger.LogInformation("Post-startup SCSI scan completed. Re-discovering devices.");
+            await reportPublisher.PublishFullDiscoveryAsync(hub, ct);
+        }
+        catch (OperationCanceledException)
+        {
+            // shutdown before rescan completed
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Post-startup SCSI rescan failed.");
         }
     }
 

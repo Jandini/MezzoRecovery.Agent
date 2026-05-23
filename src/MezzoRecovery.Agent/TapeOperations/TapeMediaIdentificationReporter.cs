@@ -60,17 +60,24 @@ public sealed class TapeMediaIdentificationReporter(ILogger<TapeMediaIdentificat
 
     private async Task<bool> TrySendAsync(HubConnection hub, AgentTapePreflightResultDto dto, CancellationToken ct)
     {
+        logger.LogDebug(
+            "Sending preflight result: device={Key} succeeded={Succeeded} empty={Empty} blockSize={BlockSize} blocks={Blocks}.",
+            dto.StableDeviceKey, dto.PreflightSucceeded, dto.IsEmpty,
+            dto.BlockSize, dto.PreflightBlocks?.Length ?? 0);
         try
         {
             await hub.InvokeAsync("ReportTapePreflightResult", dto, ct).ConfigureAwait(false);
+            logger.LogInformation(
+                "Preflight result reported successfully for device {Key}.",
+                dto.StableDeviceKey);
             return true;
         }
         catch (Exception ex)
         {
             logger.LogWarning(
                 ex,
-                "Failed to report preflight result for device {Key}; will retry on next reconnect.",
-                dto.StableDeviceKey);
+                "Failed to report preflight result for device {Key} (succeeded={Succeeded} blocks={Blocks}); will retry on next reconnect.",
+                dto.StableDeviceKey, dto.PreflightSucceeded, dto.PreflightBlocks?.Length ?? 0);
             return false;
         }
     }

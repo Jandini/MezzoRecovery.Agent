@@ -26,6 +26,7 @@ public sealed class AgentConnectionLoop(
     TapeMediaControlService tapeMediaControl,
     StopOperationHandler stopHandler,
     AgentDeviceStateStore deviceStore,
+    TapeMediaIdentificationReporter identificationReporter,
     ILogger? logger = null)
 {
     private readonly ILogger _logger = logger ?? NullLogger.Instance;
@@ -102,6 +103,10 @@ public sealed class AgentConnectionLoop(
                             await ReportCacheStatusAsync(hub!, CancellationToken.None);
                             await reportPublisher.PublishFullDiscoveryAsync(hub!, CancellationToken.None);
                             await reportPublisher.PublishActiveOperationsAsync(hub!, CancellationToken.None);
+                            // Retry any preflight-identification reports that were lost when
+                            // the connection dropped. Runs after device discovery so the server
+                            // already knows the devices before receiving their tape results.
+                            await identificationReporter.RetryPendingAsync(hub!, CancellationToken.None);
                             _logger.LogInformation("Re-registration completed after reconnect.");
                             return;
                         }

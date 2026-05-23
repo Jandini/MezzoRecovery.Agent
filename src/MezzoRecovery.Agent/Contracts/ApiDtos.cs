@@ -143,6 +143,23 @@ public sealed class AgentTapeDeviceDto
     public int ReadBufferSizeBytes { get; set; } = 65536;
 }
 
+public sealed class AgentTapePreflightResultDto
+{
+    [JsonPropertyName("stableDeviceKey")]    public string StableDeviceKey    { get; set; } = string.Empty;
+    [JsonPropertyName("linuxDevicePath")]    public string LinuxDevicePath    { get; set; } = string.Empty;
+    [JsonPropertyName("preflightSucceeded")] public bool   PreflightSucceeded { get; set; }
+    [JsonPropertyName("isEmpty")]            public bool   IsEmpty            { get; set; }
+    [JsonPropertyName("blockSize")]          public int?   BlockSize          { get; set; }
+    /// <summary>
+    /// All blocks returned by <see cref="IPreflightService"/> (up to InitialBlockCount).
+    /// Detectors that need only the first block read <c>PreflightBlocks[0]</c>;
+    /// future detectors may inspect further blocks.
+    /// </summary>
+    [JsonPropertyName("preflightBlocks")]    public byte[][]? PreflightBlocks { get; set; }
+    [JsonPropertyName("errorMessage")]       public string? ErrorMessage      { get; set; }
+    [JsonPropertyName("detectedAt")]         public DateTimeOffset DetectedAt { get; set; }
+}
+
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
 [JsonSerializable(typeof(string))]
 [JsonSerializable(typeof(EnrollApiRequest))]
@@ -167,4 +184,6 @@ public sealed class AgentTapeDeviceDto
 [JsonSerializable(typeof(TapeOperationCancelledMessage))]
 [JsonSerializable(typeof(ActiveOperationSnapshot))]
 [JsonSerializable(typeof(ActiveOperationSnapshot[]))]
+[JsonSerializable(typeof(AgentTapePreflightResultDto))]
+[JsonSerializable(typeof(byte[][]))]
 internal partial class AgentJsonContext : JsonSerializerContext;

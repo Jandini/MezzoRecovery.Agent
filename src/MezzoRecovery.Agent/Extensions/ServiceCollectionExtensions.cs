@@ -45,6 +45,7 @@ internal static class ServiceCollectionExtensions
             .AddSingleton<IPreflightService, PreflightService>()
             .AddSingleton<AgentDeviceStateStore>()
             .AddSingleton<TapeDeviceDiscoveryService>()
+            .AddSingleton<TapeMediaIdentificationReporter>()
             .AddSingleton<TapePreflightRunner>()
             .AddSingleton<ITapePreflightTrigger>(sp => sp.GetRequiredService<TapePreflightRunner>())
             .AddSingleton<TapeMediaLoader>()

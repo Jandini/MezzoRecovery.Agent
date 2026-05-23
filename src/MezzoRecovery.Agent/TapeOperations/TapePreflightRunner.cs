@@ -38,6 +38,7 @@ public sealed class TapePreflightRunner(
     TapeOperationStateStore state,
     AgentDeviceStateStore deviceStore,
     TapeDeviceDiscoveryService discovery,
+    TapeMediaIdentificationReporter reporter,
     IOptions<TapeMediaLoaderOptions> options,
     ILogger<TapePreflightRunner> logger) : ITapePreflightTrigger
 {
@@ -210,5 +211,6 @@ public sealed class TapePreflightRunner(
         deviceStore.UpdateMediaStatus(stableKey, terminal);
 
         await PublishDeviceSnapshotAsync(hub, CancellationToken.None);
+        await reporter.ReportAsync(hub, device, result, failureMessage, completedAt, CancellationToken.None);
     }
 }

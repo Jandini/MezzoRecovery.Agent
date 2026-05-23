@@ -237,7 +237,7 @@ public sealed class AgentConnectionLoop(
                 await ReportCacheStatusAsync(hub, ct);
                 await reportPublisher.PublishFullDiscoveryAsync(hub, ct);
                 await reportPublisher.PublishActiveOperationsAsync(hub, ct);
-                _ = RescanOnStartupAsync(hub, ct);
+                var startupRescan = RescanOnStartupAsync(hub, ct);
 
                 using var heartbeatCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 var heartbeatTask = HeartbeatLoopAsync(hub, hostname, os, arch, version, heartbeatCts.Token);

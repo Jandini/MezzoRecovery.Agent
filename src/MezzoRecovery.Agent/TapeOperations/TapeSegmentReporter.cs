@@ -17,8 +17,9 @@ namespace MezzoRecovery.Agent.TapeOperations;
 /// </summary>
 public sealed class TapeSegmentReporter
 {
-    private readonly Guid _tapeId;
-    private readonly Guid _tapeDeviceId;
+    private readonly Guid  _tapeId;
+    private readonly Guid  _tapeDeviceId;
+    private readonly Guid? _tapeJobId;
     private readonly ILogger _logger;
 
     private Guid? _segmentId;
@@ -27,10 +28,11 @@ public sealed class TapeSegmentReporter
     private long _segmentStartBytes;
     private long _segmentStartBlocks;
 
-    public TapeSegmentReporter(Guid tapeId, Guid tapeDeviceId, ILogger logger)
+    public TapeSegmentReporter(Guid tapeId, Guid tapeDeviceId, ILogger logger, Guid? tapeJobId = null)
     {
         _tapeId       = tapeId;
         _tapeDeviceId = tapeDeviceId;
+        _tapeJobId    = tapeJobId;
         _logger       = logger;
     }
 
@@ -102,7 +104,8 @@ public sealed class TapeSegmentReporter
 
         _ = SendAsync(hub, "ReportTapeSegmentCreated",
             new ReportTapeSegmentCreatedMessage(
-                _segmentId.Value, _tapeId, _tapeDeviceId, _segmentNumber, now));
+                _segmentId.Value, _tapeId, _tapeDeviceId, _segmentNumber, now,
+                TapeJobId: _tapeJobId));
     }
 
     private void CompleteCurrent(HubConnection hub, DateTimeOffset now, long bytesAtBoundary, long blocksAtBoundary)

@@ -123,7 +123,8 @@ public sealed class TapeReadRunner(
                     command.RequestedByUserId,
                     startedAt,
                     command.TapeBlockSizeBytes,
-                    command.BufferSizeBytes),
+                    command.BufferSizeBytes,
+                    TapeJobId: command.TapeJobId),
                 CancellationToken.None);
 
             var request = new TapeVerifyRequest
@@ -144,7 +145,7 @@ public sealed class TapeReadRunner(
             // Per-run segment tracker. Active only when the API supplied a TapeId
             // (i.e. the cartridge has been identified). No-op otherwise.
             TapeSegmentReporter? segmentReporter = command.TapeId is { } tid
-                ? new TapeSegmentReporter(tid, command.TapeDeviceId, logger)
+                ? new TapeSegmentReporter(tid, command.TapeDeviceId, logger, command.TapeJobId)
                 : null;
             var progress = new Progress<TapeCloneProgress>(p =>
             {
@@ -191,7 +192,8 @@ public sealed class TapeReadRunner(
                         mbps,
                         gbph,
                         elapsedSec,
-                        op.LastProgressAt.Value),
+                        op.LastProgressAt.Value,
+                        TapeJobId: command.TapeJobId),
                     CancellationToken.None);
 
                 // Push per-segment lifecycle (Created/Progress/Completed) to the API.
@@ -221,7 +223,8 @@ public sealed class TapeReadRunner(
                         op.LastThroughputMbps,
                         op.LastElapsedSeconds,
                         command.TapeBlockSizeBytes,
-                        command.BufferSizeBytes),
+                        command.BufferSizeBytes,
+                        TapeJobId: command.TapeJobId),
                     CancellationToken.None);
                 return;
             }
@@ -244,7 +247,8 @@ public sealed class TapeReadRunner(
                         fMbps,
                         fElapsed,
                         command.TapeBlockSizeBytes,
-                        command.BufferSizeBytes),
+                        command.BufferSizeBytes,
+                        TapeJobId: command.TapeJobId),
                     CancellationToken.None);
                 return;
             }
@@ -328,6 +332,7 @@ public sealed class TapeReadRunner(
             mbps,
             elapsed,
             command.TapeBlockSizeBytes,
-            command.BufferSizeBytes);
+            command.BufferSizeBytes,
+            TapeJobId: command.TapeJobId);
     }
 }

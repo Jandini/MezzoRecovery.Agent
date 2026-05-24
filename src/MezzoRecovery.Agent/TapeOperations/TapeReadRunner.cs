@@ -149,6 +149,9 @@ public sealed class TapeReadRunner(
                 : null;
             var progress = new Progress<TapeCloneProgress>(p =>
             {
+                if (cts.IsCancellationRequested)
+                    return;
+
                 var (bytes, blocks, filemarks, mbps, gbph, elapsedSec) = TapeProgressMapper.Extract(p.Stats);
                 op.LastBytesRead = bytes;
                 op.LastBlocksRead = blocks;
@@ -181,24 +184,22 @@ public sealed class TapeReadRunner(
                         _ = publisher.PublishCurrentAsync(hub, CancellationToken.None);
                 }
 
-                _ = reporter.ProgressAsync(
-                    hub,
-                    new TapeOperationProgressMessage(
-                        command.TapeDeviceId,
-                        TapeOperationTypes.Read,
-                        bytes,
-                        blocks,
-                        filemarks,
-                        mbps,
-                        gbph,
-                        elapsedSec,
-                        op.LastProgressAt.Value,
-                        TapeJobId: command.TapeJobId),
-                    CancellationToken.None);
+                if (cts.IsCancellationRequested)
+                    return;
 
-                // Push per-segment lifecycle (Created/Progress/Completed) to the API.
-                // No-op when TapeId was null in the start command.
-                segmentReporter?.OnProgress(hub, p.Stats, op.LastProgressAt.Value);
+                _ = SendProgressAsync(
+                    hub,
+                    command,
+                    op,
+                    bytes,
+                    blocks,
+                    filemarks,
+                    mbps,
+                    gbph,
+                    elapsedSec,
+                    segmentReporter,
+                    p.Stats,
+                    cts);
             });
 
             TapeCloneResult result;
@@ -307,6 +308,45 @@ public sealed class TapeReadRunner(
         var bufferSize = existing?.DetectedBlockBufferSizeBytes;
         if (deviceStore.UpdatePreflightResult(command.StableDeviceKey, blockSize, bufferSize, message, DateTimeOffset.UtcNow))
             _ = publisher.PublishCurrentAsync(hub, CancellationToken.None);
+    }
+
+    private async Task SendProgressAsync(
+        HubConnection hub,
+        StartTapeReadCommand command,
+        TapeOperationStateStore.RunningOperation op,
+        long bytes,
+        long blocks,
+        long filemarks,
+        double mbps,
+        double gbph,
+        long elapsedSec,
+        TapeSegmentReporter? segmentReporter,
+        TapeCloneStats stats,
+        CancellationTokenSource cts)
+    {
+        if (cts.IsCancellationRequested)
+            return;
+
+        var reportedAt = op.LastProgressAt ?? DateTimeOffset.UtcNow;
+        await reporter.ProgressAsync(
+            hub,
+            new TapeOperationProgressMessage(
+                command.TapeDeviceId,
+                TapeOperationTypes.Read,
+                bytes,
+                blocks,
+                filemarks,
+                mbps,
+                gbph,
+                elapsedSec,
+                reportedAt,
+                TapeJobId: command.TapeJobId),
+            CancellationToken.None);
+
+        if (cts.IsCancellationRequested)
+            return;
+
+        segmentReporter?.OnProgress(hub, stats, reportedAt);
     }
 
     private static TapeOperationFailedMessage BuildFailedMessage(

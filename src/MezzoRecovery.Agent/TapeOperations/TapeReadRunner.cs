@@ -113,6 +113,10 @@ public sealed class TapeReadRunner(
         if (deviceStore.UpdateStatus(command.StableDeviceKey, AgentTapeDeviceStatus.Busy, "BUSY"))
             await publisher.PublishCurrentAsync(hub, CancellationToken.None);
 
+        // Declared here (outside the try) so the finally block can always dispose it,
+        // even when an exception escapes before the variable is initialised inside.
+        TapeSegmentReporter? segmentReporter = null;
+
         try
         {
             await reporter.StartedAsync(
@@ -144,7 +148,7 @@ public sealed class TapeReadRunner(
             var stalePreflightCleared = 0;
             // Per-run segment tracker. Active only when the API supplied a TapeId
             // (i.e. the cartridge has been identified). No-op otherwise.
-            TapeSegmentReporter? segmentReporter = command.TapeId is { } tid
+            segmentReporter = command.TapeId is { } tid
                 ? new TapeSegmentReporter(tid, command.TapeDeviceId, logger, command.TapeJobId)
                 : null;
             var progress = new Progress<TapeCloneProgress>(p =>
@@ -277,6 +281,12 @@ public sealed class TapeReadRunner(
         }
         finally
         {
+            // Drain any queued segment hub messages and shut the reporter down.
+            // Must happen before state.Remove so the operation is still tracked
+            // if the consumer makes a hub call that triggers a progress lookup.
+            if (segmentReporter is not null)
+                await segmentReporter.DisposeAsync();
+
             state.Remove(command.TapeDeviceId);
             cts.Dispose();
 
@@ -348,8 +358,9 @@ public sealed class TapeReadRunner(
         if (cts.IsCancellationRequested)
             return;
 
-        if (segmentReporter is not null)
-            await segmentReporter.OnProgressAsync(hub, stats, reportedAt);
+        // OnProgress enqueues work into the reporter's channel and returns immediately —
+        // the tape read loop is never stalled waiting for hub acknowledgement.
+        segmentReporter?.OnProgress(hub, stats, reportedAt);
     }
 
     private static TapeOperationFailedMessage BuildFailedMessage(

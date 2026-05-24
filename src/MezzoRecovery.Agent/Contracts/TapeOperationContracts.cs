@@ -12,7 +12,8 @@ public sealed record StartTapeReadCommand(
     [property: JsonPropertyName("tapeBlockSizeBytes")] int TapeBlockSizeBytes,
     [property: JsonPropertyName("bufferSizeBytes")] int BufferSizeBytes,
     [property: JsonPropertyName("requestedByUserId")] Guid RequestedByUserId,
-    [property: JsonPropertyName("requestedAt")] DateTimeOffset RequestedAt);
+    [property: JsonPropertyName("requestedAt")] DateTimeOffset RequestedAt,
+    [property: JsonPropertyName("tapeId")] Guid? TapeId = null);
 
 public sealed record StopTapeOperationCommand(
     [property: JsonPropertyName("tapeDeviceId")] Guid TapeDeviceId,
@@ -119,6 +120,43 @@ public sealed record ActiveOperationSnapshot(
     [property: JsonPropertyName("blockSizeBytes")] int BlockSizeBytes,
     [property: JsonPropertyName("bufferSizeBytes")] int BufferSizeBytes,
     [property: JsonPropertyName("lastProgressAt")] DateTimeOffset? LastProgressAt);
+
+// Segment lifecycle: Agent -> API (AgentHub). Mirrors
+// MezzoRecovery.Application.TapeSegments.Models.ReportTapeSegment*Message.
+
+public sealed record ReportTapeSegmentCreatedMessage(
+    [property: JsonPropertyName("segmentId")] Guid SegmentId,
+    [property: JsonPropertyName("tapeId")] Guid TapeId,
+    [property: JsonPropertyName("tapeDeviceId")] Guid TapeDeviceId,
+    [property: JsonPropertyName("segmentNumber")] int SegmentNumber,
+    [property: JsonPropertyName("createdAt")] DateTimeOffset CreatedAt);
+
+public sealed record ReportTapeSegmentReadProgressMessage(
+    [property: JsonPropertyName("segmentId")] Guid SegmentId,
+    [property: JsonPropertyName("tapeId")] Guid TapeId,
+    [property: JsonPropertyName("segmentNumber")] int SegmentNumber,
+    [property: JsonPropertyName("currentBlock")] long CurrentBlock,
+    [property: JsonPropertyName("currentFile")] int CurrentFile,
+    [property: JsonPropertyName("sizeBytes")] long SizeBytes,
+    [property: JsonPropertyName("blockCount")] long BlockCount,
+    [property: JsonPropertyName("averageThroughputBytesPerSecond")] long AverageThroughputBytesPerSecond,
+    [property: JsonPropertyName("reportedAt")] DateTimeOffset ReportedAt);
+
+public sealed record ReportTapeSegmentReadCompletedMessage(
+    [property: JsonPropertyName("segmentId")] Guid SegmentId,
+    [property: JsonPropertyName("tapeId")] Guid TapeId,
+    [property: JsonPropertyName("segmentNumber")] int SegmentNumber,
+    [property: JsonPropertyName("sizeBytes")] long SizeBytes,
+    [property: JsonPropertyName("blockCount")] long BlockCount,
+    [property: JsonPropertyName("averageThroughputBytesPerSecond")] long AverageThroughputBytesPerSecond,
+    [property: JsonPropertyName("completedAt")] DateTimeOffset CompletedAt);
+
+public sealed record ReportTapeSegmentReadFailedMessage(
+    [property: JsonPropertyName("segmentId")] Guid SegmentId,
+    [property: JsonPropertyName("tapeId")] Guid TapeId,
+    [property: JsonPropertyName("segmentNumber")] int SegmentNumber,
+    [property: JsonPropertyName("errorMessage")] string ErrorMessage,
+    [property: JsonPropertyName("failedAt")] DateTimeOffset FailedAt);
 
 public static class TapeOperationTypes
 {

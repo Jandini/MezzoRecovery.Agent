@@ -184,6 +184,10 @@ public sealed class AgentTapePreflightResultDto
 [JsonSerializable(typeof(TapeOperationCancelledMessage))]
 [JsonSerializable(typeof(ActiveOperationSnapshot))]
 [JsonSerializable(typeof(ActiveOperationSnapshot[]))]
+[JsonSerializable(typeof(ReportTapeSegmentCreatedMessage))]
+[JsonSerializable(typeof(ReportTapeSegmentReadProgressMessage))]
+[JsonSerializable(typeof(ReportTapeSegmentReadCompletedMessage))]
+[JsonSerializable(typeof(ReportTapeSegmentReadFailedMessage))]
 [JsonSerializable(typeof(AgentTapePreflightResultDto))]
 [JsonSerializable(typeof(byte[][]))]
 internal partial class AgentJsonContext : JsonSerializerContext;

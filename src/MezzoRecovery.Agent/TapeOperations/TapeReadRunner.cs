@@ -141,6 +141,11 @@ public sealed class TapeReadRunner(
             };
 
             var stalePreflightCleared = 0;
+            // Per-run segment tracker. Active only when the API supplied a TapeId
+            // (i.e. the cartridge has been identified). No-op otherwise.
+            TapeSegmentReporter? segmentReporter = command.TapeId is { } tid
+                ? new TapeSegmentReporter(tid, command.TapeDeviceId, logger)
+                : null;
             var progress = new Progress<TapeCloneProgress>(p =>
             {
                 var (bytes, blocks, filemarks, mbps, gbph, elapsedSec) = TapeProgressMapper.Extract(p.Stats);
@@ -188,6 +193,10 @@ public sealed class TapeReadRunner(
                         elapsedSec,
                         op.LastProgressAt.Value),
                     CancellationToken.None);
+
+                // Push per-segment lifecycle (Created/Progress/Completed) to the API.
+                // No-op when TapeId was null in the start command.
+                segmentReporter?.OnProgress(hub, p.Stats, op.LastProgressAt.Value);
             });
 
             TapeCloneResult result;
@@ -220,6 +229,7 @@ public sealed class TapeReadRunner(
             var (fBytes, fBlocks, fFilemarks, fMbps, _, fElapsed) = TapeProgressMapper.Extract(result.FinalStats);
             if (result.IsSuccess)
             {
+                segmentReporter?.OnReadFinished(hub, result.FinalStats, DateTimeOffset.UtcNow);
                 await reporter.CompletedAsync(
                     hub,
                     new TapeOperationCompletedMessage(
@@ -239,8 +249,9 @@ public sealed class TapeReadRunner(
                 return;
             }
 
-            RecordReadError(hub, command,
-                result.ErrorMessage ?? result.FailureReason.ToString());
+            var failureSummary = result.ErrorMessage ?? result.FailureReason.ToString();
+            segmentReporter?.OnReadFailed(hub, failureSummary, DateTimeOffset.UtcNow);
+            RecordReadError(hub, command, failureSummary);
             await reporter.FailedAsync(
                 hub,
                 BuildFailedMessage(command, startedAt, DateTimeOffset.UtcNow,

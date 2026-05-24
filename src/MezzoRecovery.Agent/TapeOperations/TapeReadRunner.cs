@@ -233,7 +233,8 @@ public sealed class TapeReadRunner(
             var (fBytes, fBlocks, fFilemarks, fMbps, _, fElapsed) = TapeProgressMapper.Extract(result.FinalStats);
             if (result.IsSuccess)
             {
-                segmentReporter?.OnReadFinished(hub, result.FinalStats, DateTimeOffset.UtcNow);
+                if (segmentReporter is not null)
+                    await segmentReporter.OnReadFinishedAsync(hub, result.FinalStats, DateTimeOffset.UtcNow);
                 await reporter.CompletedAsync(
                     hub,
                     new TapeOperationCompletedMessage(
@@ -255,7 +256,8 @@ public sealed class TapeReadRunner(
             }
 
             var failureSummary = result.ErrorMessage ?? result.FailureReason.ToString();
-            segmentReporter?.OnReadFailed(hub, failureSummary, DateTimeOffset.UtcNow);
+            if (segmentReporter is not null)
+                await segmentReporter.OnReadFailedAsync(hub, failureSummary, DateTimeOffset.UtcNow);
             RecordReadError(hub, command, failureSummary);
             await reporter.FailedAsync(
                 hub,
@@ -346,7 +348,8 @@ public sealed class TapeReadRunner(
         if (cts.IsCancellationRequested)
             return;
 
-        segmentReporter?.OnProgress(hub, stats, reportedAt);
+        if (segmentReporter is not null)
+            await segmentReporter.OnProgressAsync(hub, stats, reportedAt);
     }
 
     private static TapeOperationFailedMessage BuildFailedMessage(

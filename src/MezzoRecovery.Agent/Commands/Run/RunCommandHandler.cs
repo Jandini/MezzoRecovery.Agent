@@ -18,7 +18,8 @@ internal sealed class RunCommandHandler(
     TapeReadRunner tapeReadRunner,
     TapeMediaControlService tapeMediaControl,
     StopOperationHandler stopHandler,
-    AgentDeviceStateStore deviceStore)
+    AgentDeviceStateStore deviceStore,
+    TapeMediaIdentificationReporter identificationReporter)
 {
     public static readonly Option<string?> Config = new("--config")
     {
@@ -53,6 +54,7 @@ internal sealed class RunCommandHandler(
             tapeMediaControl,
             stopHandler,
             deviceStore,
+            identificationReporter,
             loggerFactory.CreateLogger<AgentConnectionLoop>());
         await loop.RunAsync(ct);
         return 0;

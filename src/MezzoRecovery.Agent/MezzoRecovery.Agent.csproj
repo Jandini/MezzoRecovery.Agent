@@ -53,14 +53,9 @@
 		<ProjectReference Include="$(MezzoRecoveryTapeProject)" Condition="Exists($(MezzoRecoveryTapeProject))" />
 	</ItemGroup>
 
-	<ItemGroup Condition=" '$(UseProjectReference)' != 'true' ">
-		<ProjectReference Include="$(MezzoRecoveryTapeDriveProject)" Condition="Exists($(MezzoRecoveryTapeDriveProject))" />
-		<ProjectReference Include="$(MezzoRecoveryTapeProject)" Condition="Exists($(MezzoRecoveryTapeProject))" />
-	</ItemGroup>
-
 	<ItemGroup>
 		<PackageReference Include="MezzoRecovery.TapeDrive" Version="0.1.1-main.9" Condition="!Exists($(MezzoRecoveryTapeDriveProject))" />
-		<PackageReference Include="MezzoRecovery.Tape" Version="0.1.0-main.9" Condition="!Exists($(MezzoRecoveryTapeProject))" />
+		<PackageReference Include="MezzoRecovery.Tape" Version="0.1.0-main.10" Condition="!Exists($(MezzoRecoveryTapeProject))" />
 	</ItemGroup>
 
 </Project>

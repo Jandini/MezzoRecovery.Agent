@@ -13,7 +13,10 @@ public sealed record StartTapeReadCommand(
     [property: JsonPropertyName("bufferSizeBytes")] int BufferSizeBytes,
     [property: JsonPropertyName("requestedByUserId")] Guid RequestedByUserId,
     [property: JsonPropertyName("requestedAt")] DateTimeOffset RequestedAt,
-    [property: JsonPropertyName("tapeId")] Guid? TapeId = null);
+    [property: JsonPropertyName("tapeId")] Guid? TapeId = null,
+    // Internal TapeJob tracking id. Nullable so old API builds continue to work
+    // during a rolling deploy. The agent echoes this back in all lifecycle messages.
+    [property: JsonPropertyName("tapeJobId")] Guid? TapeJobId = null);
 
 public sealed record StopTapeOperationCommand(
     [property: JsonPropertyName("tapeDeviceId")] Guid TapeDeviceId,
@@ -49,7 +52,8 @@ public sealed record TapeOperationStartedMessage(
     [property: JsonPropertyName("requestedByUserId")] Guid RequestedByUserId,
     [property: JsonPropertyName("startedAt")] DateTimeOffset StartedAt,
     [property: JsonPropertyName("blockSizeBytes")] int BlockSizeBytes,
-    [property: JsonPropertyName("bufferSizeBytes")] int BufferSizeBytes);
+    [property: JsonPropertyName("bufferSizeBytes")] int BufferSizeBytes,
+    [property: JsonPropertyName("tapeJobId")] Guid? TapeJobId = null);
 
 public sealed record TapeOperationProgressMessage(
     [property: JsonPropertyName("tapeDeviceId")] Guid TapeDeviceId,
@@ -60,7 +64,8 @@ public sealed record TapeOperationProgressMessage(
     [property: JsonPropertyName("throughputMbps")] double ThroughputMbps,
     [property: JsonPropertyName("throughputGbph")] double ThroughputGbph,
     [property: JsonPropertyName("elapsedSeconds")] long ElapsedSeconds,
-    [property: JsonPropertyName("reportedAt")] DateTimeOffset ReportedAt);
+    [property: JsonPropertyName("reportedAt")] DateTimeOffset ReportedAt,
+    [property: JsonPropertyName("tapeJobId")] Guid? TapeJobId = null);
 
 public sealed record TapeOperationCompletedMessage(
     [property: JsonPropertyName("tapeDeviceId")] Guid TapeDeviceId,
@@ -74,7 +79,8 @@ public sealed record TapeOperationCompletedMessage(
     [property: JsonPropertyName("throughputMbps")] double ThroughputMbps,
     [property: JsonPropertyName("elapsedSeconds")] long ElapsedSeconds,
     [property: JsonPropertyName("blockSizeBytes")] int BlockSizeBytes,
-    [property: JsonPropertyName("bufferSizeBytes")] int BufferSizeBytes);
+    [property: JsonPropertyName("bufferSizeBytes")] int BufferSizeBytes,
+    [property: JsonPropertyName("tapeJobId")] Guid? TapeJobId = null);
 
 public sealed record TapeOperationFailedMessage(
     [property: JsonPropertyName("tapeDeviceId")] Guid TapeDeviceId,
@@ -90,7 +96,8 @@ public sealed record TapeOperationFailedMessage(
     [property: JsonPropertyName("throughputMbps")] double ThroughputMbps,
     [property: JsonPropertyName("elapsedSeconds")] long ElapsedSeconds,
     [property: JsonPropertyName("blockSizeBytes")] int BlockSizeBytes,
-    [property: JsonPropertyName("bufferSizeBytes")] int BufferSizeBytes);
+    [property: JsonPropertyName("bufferSizeBytes")] int BufferSizeBytes,
+    [property: JsonPropertyName("tapeJobId")] Guid? TapeJobId = null);
 
 public sealed record TapeOperationCancelledMessage(
     [property: JsonPropertyName("tapeDeviceId")] Guid TapeDeviceId,
@@ -104,7 +111,8 @@ public sealed record TapeOperationCancelledMessage(
     [property: JsonPropertyName("throughputMbps")] double ThroughputMbps,
     [property: JsonPropertyName("elapsedSeconds")] long ElapsedSeconds,
     [property: JsonPropertyName("blockSizeBytes")] int BlockSizeBytes,
-    [property: JsonPropertyName("bufferSizeBytes")] int BufferSizeBytes);
+    [property: JsonPropertyName("bufferSizeBytes")] int BufferSizeBytes,
+    [property: JsonPropertyName("tapeJobId")] Guid? TapeJobId = null);
 
 public sealed record ActiveOperationSnapshot(
     [property: JsonPropertyName("tapeDeviceId")] Guid TapeDeviceId,
@@ -129,7 +137,8 @@ public sealed record ReportTapeSegmentCreatedMessage(
     [property: JsonPropertyName("tapeId")] Guid TapeId,
     [property: JsonPropertyName("tapeDeviceId")] Guid TapeDeviceId,
     [property: JsonPropertyName("segmentNumber")] int SegmentNumber,
-    [property: JsonPropertyName("createdAt")] DateTimeOffset CreatedAt);
+    [property: JsonPropertyName("createdAt")] DateTimeOffset CreatedAt,
+    [property: JsonPropertyName("tapeJobId")] Guid? TapeJobId = null);
 
 public sealed record ReportTapeSegmentReadProgressMessage(
     [property: JsonPropertyName("segmentId")] Guid SegmentId,
@@ -157,6 +166,12 @@ public sealed record ReportTapeSegmentReadFailedMessage(
     [property: JsonPropertyName("segmentNumber")] int SegmentNumber,
     [property: JsonPropertyName("errorMessage")] string ErrorMessage,
     [property: JsonPropertyName("failedAt")] DateTimeOffset FailedAt);
+
+public sealed record ReportTapeSegmentReadAbortedMessage(
+    [property: JsonPropertyName("segmentId")] Guid SegmentId,
+    [property: JsonPropertyName("tapeId")] Guid TapeId,
+    [property: JsonPropertyName("segmentNumber")] int SegmentNumber,
+    [property: JsonPropertyName("abortedAt")] DateTimeOffset AbortedAt);
 
 public static class TapeOperationTypes
 {

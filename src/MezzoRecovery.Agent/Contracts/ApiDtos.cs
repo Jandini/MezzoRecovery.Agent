@@ -188,6 +188,7 @@ public sealed class AgentTapePreflightResultDto
 [JsonSerializable(typeof(ReportTapeSegmentReadProgressMessage))]
 [JsonSerializable(typeof(ReportTapeSegmentReadCompletedMessage))]
 [JsonSerializable(typeof(ReportTapeSegmentReadFailedMessage))]
+[JsonSerializable(typeof(ReportTapeSegmentReadAbortedMessage))]
 [JsonSerializable(typeof(AgentTapePreflightResultDto))]
 [JsonSerializable(typeof(byte[][]))]
 internal partial class AgentJsonContext : JsonSerializerContext;

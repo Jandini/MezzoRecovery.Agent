@@ -113,6 +113,10 @@ public sealed class TapeReadRunner(
         if (deviceStore.UpdateStatus(command.StableDeviceKey, AgentTapeDeviceStatus.Busy, "BUSY"))
             await publisher.PublishCurrentAsync(hub, CancellationToken.None);
 
+        // Declared here (outside the try) so the finally block can always dispose it,
+        // even when an exception escapes before the variable is initialised inside.
+        TapeSegmentReporter? segmentReporter = null;
+
         try
         {
             await reporter.StartedAsync(
@@ -123,7 +127,8 @@ public sealed class TapeReadRunner(
                     command.RequestedByUserId,
                     startedAt,
                     command.TapeBlockSizeBytes,
-                    command.BufferSizeBytes),
+                    command.BufferSizeBytes,
+                    TapeJobId: command.TapeJobId),
                 CancellationToken.None);
 
             var request = new TapeVerifyRequest
@@ -143,11 +148,14 @@ public sealed class TapeReadRunner(
             var stalePreflightCleared = 0;
             // Per-run segment tracker. Active only when the API supplied a TapeId
             // (i.e. the cartridge has been identified). No-op otherwise.
-            TapeSegmentReporter? segmentReporter = command.TapeId is { } tid
-                ? new TapeSegmentReporter(tid, command.TapeDeviceId, logger)
+            segmentReporter = command.TapeId is { } tid
+                ? new TapeSegmentReporter(tid, command.TapeDeviceId, logger, command.TapeJobId)
                 : null;
             var progress = new Progress<TapeCloneProgress>(p =>
             {
+                if (cts.IsCancellationRequested)
+                    return;
+
                 var (bytes, blocks, filemarks, mbps, gbph, elapsedSec) = TapeProgressMapper.Extract(p.Stats);
                 op.LastBytesRead = bytes;
                 op.LastBlocksRead = blocks;
@@ -180,23 +188,22 @@ public sealed class TapeReadRunner(
                         _ = publisher.PublishCurrentAsync(hub, CancellationToken.None);
                 }
 
-                _ = reporter.ProgressAsync(
-                    hub,
-                    new TapeOperationProgressMessage(
-                        command.TapeDeviceId,
-                        TapeOperationTypes.Read,
-                        bytes,
-                        blocks,
-                        filemarks,
-                        mbps,
-                        gbph,
-                        elapsedSec,
-                        op.LastProgressAt.Value),
-                    CancellationToken.None);
+                if (cts.IsCancellationRequested)
+                    return;
 
-                // Push per-segment lifecycle (Created/Progress/Completed) to the API.
-                // No-op when TapeId was null in the start command.
-                segmentReporter?.OnProgress(hub, p.Stats, op.LastProgressAt.Value);
+                _ = SendProgressAsync(
+                    hub,
+                    command,
+                    op,
+                    bytes,
+                    blocks,
+                    filemarks,
+                    mbps,
+                    gbph,
+                    elapsedSec,
+                    segmentReporter,
+                    p.Stats,
+                    cts);
             });
 
             TapeCloneResult result;
@@ -207,6 +214,8 @@ public sealed class TapeReadRunner(
             catch (OperationCanceledException)
             {
                 var cancelledAt = DateTimeOffset.UtcNow;
+                if (segmentReporter is not null)
+                    await segmentReporter.OnReadAbortedAsync(hub, cancelledAt);
                 await reporter.CancelledAsync(
                     hub,
                     new TapeOperationCancelledMessage(
@@ -221,7 +230,8 @@ public sealed class TapeReadRunner(
                         op.LastThroughputMbps,
                         op.LastElapsedSeconds,
                         command.TapeBlockSizeBytes,
-                        command.BufferSizeBytes),
+                        command.BufferSizeBytes,
+                        TapeJobId: command.TapeJobId),
                     CancellationToken.None);
                 return;
             }
@@ -229,7 +239,8 @@ public sealed class TapeReadRunner(
             var (fBytes, fBlocks, fFilemarks, fMbps, _, fElapsed) = TapeProgressMapper.Extract(result.FinalStats);
             if (result.IsSuccess)
             {
-                segmentReporter?.OnReadFinished(hub, result.FinalStats, DateTimeOffset.UtcNow);
+                if (segmentReporter is not null)
+                    await segmentReporter.OnReadFinishedAsync(hub, result.FinalStats, DateTimeOffset.UtcNow);
                 await reporter.CompletedAsync(
                     hub,
                     new TapeOperationCompletedMessage(
@@ -244,13 +255,15 @@ public sealed class TapeReadRunner(
                         fMbps,
                         fElapsed,
                         command.TapeBlockSizeBytes,
-                        command.BufferSizeBytes),
+                        command.BufferSizeBytes,
+                        TapeJobId: command.TapeJobId),
                     CancellationToken.None);
                 return;
             }
 
             var failureSummary = result.ErrorMessage ?? result.FailureReason.ToString();
-            segmentReporter?.OnReadFailed(hub, failureSummary, DateTimeOffset.UtcNow);
+            if (segmentReporter is not null)
+                await segmentReporter.OnReadFailedAsync(hub, failureSummary, DateTimeOffset.UtcNow);
             RecordReadError(hub, command, failureSummary);
             await reporter.FailedAsync(
                 hub,
@@ -270,6 +283,12 @@ public sealed class TapeReadRunner(
         }
         finally
         {
+            // Drain any queued segment hub messages and shut the reporter down.
+            // Must happen before state.Remove so the operation is still tracked
+            // if the consumer makes a hub call that triggers a progress lookup.
+            if (segmentReporter is not null)
+                await segmentReporter.DisposeAsync();
+
             state.Remove(command.TapeDeviceId);
             cts.Dispose();
 
@@ -305,6 +324,47 @@ public sealed class TapeReadRunner(
             _ = publisher.PublishCurrentAsync(hub, CancellationToken.None);
     }
 
+    private async Task SendProgressAsync(
+        HubConnection hub,
+        StartTapeReadCommand command,
+        TapeOperationStateStore.RunningOperation op,
+        long bytes,
+        long blocks,
+        long filemarks,
+        double mbps,
+        double gbph,
+        long elapsedSec,
+        TapeSegmentReporter? segmentReporter,
+        TapeCloneStats stats,
+        CancellationTokenSource cts)
+    {
+        if (cts.IsCancellationRequested)
+            return;
+
+        var reportedAt = op.LastProgressAt ?? DateTimeOffset.UtcNow;
+        await reporter.ProgressAsync(
+            hub,
+            new TapeOperationProgressMessage(
+                command.TapeDeviceId,
+                TapeOperationTypes.Read,
+                bytes,
+                blocks,
+                filemarks,
+                mbps,
+                gbph,
+                elapsedSec,
+                reportedAt,
+                TapeJobId: command.TapeJobId),
+            CancellationToken.None);
+
+        if (cts.IsCancellationRequested)
+            return;
+
+        // OnProgress enqueues work into the reporter's channel and returns immediately —
+        // the tape read loop is never stalled waiting for hub acknowledgement.
+        segmentReporter?.OnProgress(hub, stats, reportedAt);
+    }
+
     private static TapeOperationFailedMessage BuildFailedMessage(
         StartTapeReadCommand command,
         DateTimeOffset startedAt,
@@ -328,6 +388,7 @@ public sealed class TapeReadRunner(
             mbps,
             elapsed,
             command.TapeBlockSizeBytes,
-            command.BufferSizeBytes);
+            command.BufferSizeBytes,
+            TapeJobId: command.TapeJobId);
     }
 }

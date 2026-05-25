@@ -99,6 +99,13 @@ public sealed class TapeSegmentReporter : IAsyncDisposable
     public Task OnReadFailedAsync(HubConnection hub, string errorMessage, DateTimeOffset now) =>
         EnqueueAndWaitAsync(() => ProcessReadFailedAsync(hub, errorMessage, now));
 
+    /// <summary>
+    /// Enqueues an Aborted message for the currently-open segment and waits for it to
+    /// be sent. Called when the user stops the tape read.
+    /// </summary>
+    public Task OnReadAbortedAsync(HubConnection hub, DateTimeOffset now) =>
+        EnqueueAndWaitAsync(() => ProcessReadAbortedAsync(hub, now));
+
     // ── IAsyncDisposable ──────────────────────────────────────────────
 
     /// <summary>
@@ -178,6 +185,16 @@ public sealed class TapeSegmentReporter : IAsyncDisposable
         await SendAsync(hub, "ReportTapeSegmentReadFailed",
             new ReportTapeSegmentReadFailedMessage(
                 id, _tapeId, _segmentNumber, errorMessage, now));
+    }
+
+    private async Task ProcessReadAbortedAsync(HubConnection hub, DateTimeOffset now)
+    {
+        if (_segmentId is null) return;
+        var id = _segmentId.Value;
+        _segmentId = null;
+        await SendAsync(hub, "ReportTapeSegmentReadAborted",
+            new ReportTapeSegmentReadAbortedMessage(
+                id, _tapeId, _segmentNumber, now));
     }
 
     // ── Segment lifecycle helpers ─────────────────────────────────────

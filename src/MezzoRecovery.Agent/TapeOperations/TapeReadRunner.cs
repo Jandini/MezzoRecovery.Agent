@@ -214,6 +214,8 @@ public sealed class TapeReadRunner(
             catch (OperationCanceledException)
             {
                 var cancelledAt = DateTimeOffset.UtcNow;
+                if (segmentReporter is not null)
+                    await segmentReporter.OnReadAbortedAsync(hub, cancelledAt);
                 await reporter.CancelledAsync(
                     hub,
                     new TapeOperationCancelledMessage(

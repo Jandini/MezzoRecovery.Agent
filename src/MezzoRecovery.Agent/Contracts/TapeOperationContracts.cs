@@ -167,6 +167,12 @@ public sealed record ReportTapeSegmentReadFailedMessage(
     [property: JsonPropertyName("errorMessage")] string ErrorMessage,
     [property: JsonPropertyName("failedAt")] DateTimeOffset FailedAt);
 
+public sealed record ReportTapeSegmentReadAbortedMessage(
+    [property: JsonPropertyName("segmentId")] Guid SegmentId,
+    [property: JsonPropertyName("tapeId")] Guid TapeId,
+    [property: JsonPropertyName("segmentNumber")] int SegmentNumber,
+    [property: JsonPropertyName("abortedAt")] DateTimeOffset AbortedAt);
+
 public static class TapeOperationTypes
 {
     public const string Read = "Read";

@@ -1,4 +1,5 @@
 using MezzoRecovery.Agent.Configuration;
+using MezzoRecovery.Agent.Contracts;
 using MezzoRecovery.Agent.TapeOperations;
 using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.Extensions.Logging;
@@ -46,7 +47,7 @@ public sealed class DeviceReportPublisher(
 
             // Re-snapshot in case Observe mutated MediaStatus.
             var publish = store.Snapshot();
-            await hub.InvokeAsync("ReportTapeDevices", publish.ToArray(), ct);
+            await hub.InvokeAsync("ReportTapeDevices", publish.Select(MapToWire).ToArray(), ct);
             logger.LogInformation("Reported {Count} tape device(s) (full discovery).", publish.Count);
         }
         catch (Exception ex)
@@ -74,7 +75,7 @@ public sealed class DeviceReportPublisher(
 
         try
         {
-            await hub.InvokeAsync("ReportTapeDevices", snapshot.ToArray(), ct);
+            await hub.InvokeAsync("ReportTapeDevices", snapshot.Select(MapToWire).ToArray(), ct);
         }
         catch (Exception ex)
         {
@@ -137,4 +138,27 @@ public sealed class DeviceReportPublisher(
 
         await PublishActiveOperationsAsync(hub, ct);
     }
+
+    /// <summary>
+    /// Maps the agent's internal device DTO to the wire DTO that the server's
+    /// AgentHub.ReportTapeDevices method expects. Converts enum fields to their
+    /// string names and maps the "deviceStatus" / "mediaStatus" field names that
+    /// the server-side <c>TapeDeviceReport</c> record uses.
+    /// </summary>
+    private static TapeDeviceWireDto MapToWire(AgentTapeDeviceDto d) => new(
+        StableDeviceKey:         d.StableDeviceKey,
+        LinuxDevicePath:         d.LinuxDevicePath,
+        NonRewindingDevicePath:  d.NonRewindingDevicePath,
+        RewindingDevicePath:     d.RewindingDevicePath,
+        Vendor:                  d.Vendor,
+        Model:                   d.Model,
+        SerialNumber:            d.SerialNumber,
+        SysfsPath:               d.SysfsPath,
+        ScsiAddress:             d.ScsiAddress,
+        IsPresent:               d.IsPresent,
+        IsAccessible:            d.IsAccessible,
+        ReadBlockSizeBytes:      d.ReadBlockSizeBytes,
+        ReadBufferSizeBytes:     d.ReadBufferSizeBytes,
+        DeviceStatus:            d.Status.ToString(),
+        MediaStatus:             d.MediaStatus.ToString());
 }

@@ -15,11 +15,11 @@ internal sealed class RunCommandHandler(
     DeviceDiscoveryOptions discoveryOptions,
     IScsiHostEnumerator scsiEnumerator,
     IScsiTapeDeviceManager scsiTapeDeviceManager,
-    TapeReadRunner tapeReadRunner,
+    TapeRunRunner tapeRunRunner,
     TapeMediaControlService tapeMediaControl,
-    StopOperationHandler stopHandler,
     AgentDeviceStateStore deviceStore,
-    TapeMediaIdentificationReporter identificationReporter)
+    TapeFileHasher fileHasher,
+    TapeFileUploader fileUploader)
 {
     public static readonly Option<string?> Config = new("--config")
     {
@@ -39,7 +39,7 @@ internal sealed class RunCommandHandler(
 
     public async Task<int> RunAsync(ParseResult parseResult, CancellationToken ct)
     {
-        var configPath = parseResult.GetValue(Config) ?? AgentPaths.DefaultConfigPath;
+        var configPath     = parseResult.GetValue(Config)     ?? AgentPaths.DefaultConfigPath;
         var credentialPath = parseResult.GetValue(Credential) ?? AgentPaths.DefaultCredentialPath;
 
         var loop = new AgentConnectionLoop(
@@ -50,11 +50,11 @@ internal sealed class RunCommandHandler(
             discoveryOptions,
             scsiEnumerator,
             scsiTapeDeviceManager,
-            tapeReadRunner,
+            tapeRunRunner,
             tapeMediaControl,
-            stopHandler,
             deviceStore,
-            identificationReporter,
+            fileHasher,
+            fileUploader,
             loggerFactory.CreateLogger<AgentConnectionLoop>());
         await loop.RunAsync(ct);
         return 0;

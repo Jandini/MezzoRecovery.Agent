@@ -7,13 +7,13 @@ using Microsoft.Extensions.Logging;
 namespace MezzoRecovery.Agent.TapeOperations;
 
 /// <summary>
-/// Synchronous media operations (rewind, eject, space). Each runs under the per-device lock
-/// and reports a single terminal message -- no progress ticks.
+/// Synchronous media operations (Rewind, Eject, Space). Each runs under the per-device lock.
+/// These operations are device-level utilities and do not report to the new tape-run pipeline.
+/// Results are logged locally and reflected in the device status refresh at the end.
 /// </summary>
 public sealed class TapeMediaControlService(
     TapeDeviceLockManager locks,
     TapeOperationStateStore state,
-    TapeOperationReporter reporter,
     AgentDeviceStateStore deviceStore,
     DeviceReportPublisher publisher,
     ILogger<TapeMediaControlService> logger)
@@ -25,25 +25,21 @@ public sealed class TapeMediaControlService(
     {
         if (string.IsNullOrWhiteSpace(command.NonRewindingDevicePath))
         {
-            await reporter.FailedAsync(hub, BuildFailed(command, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow,
-                "InvalidPath", "Non-rewinding device path is required."), CancellationToken.None);
+            logger.LogWarning(
+                "ExecuteTapeMediaAction {Action}: non-rewinding device path is required.",
+                command.OperationType);
             return;
         }
 
         if (state.Get(command.TapeDeviceId) is not null)
         {
-            var now = DateTimeOffset.UtcNow;
-            await reporter.FailedAsync(hub, BuildFailed(command, now, now, "DeviceBusy",
-                "Device already has an operation in progress."), CancellationToken.None);
+            logger.LogWarning(
+                "ExecuteTapeMediaAction {Action}: device {DeviceId} already busy.",
+                command.OperationType, command.TapeDeviceId);
             return;
         }
 
-        // Hardware pre-flight: re-probe the drive *now* rather than trusting the cached
-        // sweep. The cache may be many seconds stale, and acting on a stale "Ready" for a
-        // drive whose cartridge was just pulled means OpenRead blocks long enough for the
-        // UI to sit on "Ejecting · 00:28" before erroring with "No medium found". The
-        // refresh path also pushes the corrected card back to the UX so the operator sees
-        // the real state regardless of what we decide here.
+        // Re-probe the drive before acting so we never act on a stale Busy/NoMedia cache.
         await publisher.PublishDeviceStateRefreshAsync(hub, command.StableDeviceKey, CancellationToken.None);
 
         var snapshot = deviceStore.GetByStableKey(command.StableDeviceKey);
@@ -51,21 +47,18 @@ public sealed class TapeMediaControlService(
         {
             if (snapshot.Status == AgentTapeDeviceStatus.Busy || snapshot.MediaStatus.IsBusy())
             {
-                var now = DateTimeOffset.UtcNow;
-                await reporter.FailedAsync(hub, BuildFailed(command, now, now, "DeviceBusy",
-                    "Device is busy with another operation."), CancellationToken.None);
+                logger.LogWarning(
+                    "ExecuteTapeMediaAction {Action}: device {DeviceId} is busy.",
+                    command.OperationType, command.TapeDeviceId);
                 return;
             }
 
-            // Every media op (Eject, Rewind, Space) needs a cartridge present. Eject was
-            // previously allowed through as a "harmless door unlock", but in practice
-            // OpenRead blocks for tens of seconds on an empty drive before failing.
             if (snapshot.Status == AgentTapeDeviceStatus.NoMedia
                 || snapshot.MediaStatus == TapeMediaStatus.NoMedia)
             {
-                var now = DateTimeOffset.UtcNow;
-                await reporter.FailedAsync(hub, BuildFailed(command, now, now, "NoMedia",
-                    "No tape media loaded."), CancellationToken.None);
+                logger.LogWarning(
+                    "ExecuteTapeMediaAction {Action}: no media loaded on device {DeviceId}.",
+                    command.OperationType, command.TapeDeviceId);
                 return;
             }
         }
@@ -86,8 +79,9 @@ public sealed class TapeMediaControlService(
 
         if (!state.TryRegister(op))
         {
-            await reporter.FailedAsync(hub, BuildFailed(command, startedAt, DateTimeOffset.UtcNow,
-                "DeviceBusy", "Race: another operation registered first."), CancellationToken.None);
+            logger.LogWarning(
+                "ExecuteTapeMediaAction {Action}: race — another op registered first.",
+                command.OperationType);
             return;
         }
 
@@ -96,61 +90,35 @@ public sealed class TapeMediaControlService(
 
         try
         {
-            await reporter.StartedAsync(
-                hub,
-                new TapeOperationStartedMessage(
-                    command.TapeDeviceId,
-                    command.OperationType,
-                    command.RequestedByUserId,
-                    startedAt,
-                    BlockSizeBytes: 0,
-                    BufferSizeBytes: 0),
-                CancellationToken.None);
-
             await using var tape = LinuxTapeSession.OpenRead(command.NonRewindingDevicePath);
             var navigator = tape.Navigator;
             var ok = command.OperationType switch
             {
                 TapeOperationTypes.Rewind => navigator.TryRewind(out _),
-                TapeOperationTypes.Eject => navigator.TryEject(out _),
-                TapeOperationTypes.Space => navigator.TrySpaceFilemarksForward(
+                TapeOperationTypes.Eject  => navigator.TryEject(out _),
+                TapeOperationTypes.Space  => navigator.TrySpaceFilemarksForward(
                     Math.Max(1, command.SpaceCount ?? 1), out _),
                 _ => false,
             };
 
-            var completedAt = DateTimeOffset.UtcNow;
-            if (!ok)
+            if (ok)
             {
-                await reporter.FailedAsync(hub, BuildFailed(command, startedAt, completedAt,
-                    "DeviceError", $"Media action {command.OperationType} failed."), CancellationToken.None);
-                return;
+                deviceStore.ClearPreflightResult(command.StableDeviceKey);
+                logger.LogInformation(
+                    "ExecuteTapeMediaAction {Action} succeeded on device {DeviceId}.",
+                    command.OperationType, command.TapeDeviceId);
             }
-
-            deviceStore.ClearPreflightResult(command.StableDeviceKey);
-
-            await reporter.CompletedAsync(
-                hub,
-                new TapeOperationCompletedMessage(
-                    command.TapeDeviceId,
-                    command.OperationType,
-                    command.RequestedByUserId,
-                    startedAt,
-                    completedAt,
-                    BytesRead: 0,
-                    BlocksRead: 0,
-                    FilemarksRead: 0,
-                    ThroughputMbps: 0,
-                    ElapsedSeconds: (long)(completedAt - startedAt).TotalSeconds,
-                    BlockSizeBytes: 0,
-                    BufferSizeBytes: 0),
-                CancellationToken.None);
+            else
+            {
+                logger.LogWarning(
+                    "ExecuteTapeMediaAction {Action} failed on device {DeviceId}.",
+                    command.OperationType, command.TapeDeviceId);
+            }
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, "Media action {Action} on device {DeviceId} failed.",
+            logger.LogError(ex, "Media action {Action} on device {DeviceId} threw.",
                 command.OperationType, command.TapeDeviceId);
-            await reporter.FailedAsync(hub, BuildFailed(command, startedAt, DateTimeOffset.UtcNow,
-                "DeviceError", ex.Message), CancellationToken.None);
         }
         finally
         {
@@ -164,30 +132,9 @@ public sealed class TapeMediaControlService(
             }
             catch (Exception ex)
             {
-                logger.LogWarning(ex, "Post-operation device report failed for device {DeviceId}.", command.TapeDeviceId);
+                logger.LogWarning(ex,
+                    "Post-op device report failed for device {DeviceId}.", command.TapeDeviceId);
             }
         }
     }
-
-    private static TapeOperationFailedMessage BuildFailed(
-        ExecuteTapeMediaActionCommand command,
-        DateTimeOffset startedAt,
-        DateTimeOffset failedAt,
-        string reason,
-        string? message) =>
-        new(
-            command.TapeDeviceId,
-            command.OperationType,
-            command.RequestedByUserId,
-            startedAt,
-            failedAt,
-            reason,
-            message,
-            BytesRead: 0,
-            BlocksRead: 0,
-            FilemarksRead: 0,
-            ThroughputMbps: 0,
-            ElapsedSeconds: 0,
-            BlockSizeBytes: 0,
-            BufferSizeBytes: 0);
 }

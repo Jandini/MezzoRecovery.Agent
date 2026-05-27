@@ -22,11 +22,11 @@ public sealed class AgentConnectionLoop(
     DeviceDiscoveryOptions discoveryOptions,
     IScsiHostEnumerator scsiEnumerator,
     IScsiTapeDeviceManager scsiTapeDeviceManager,
-    TapeReadRunner tapeReadRunner,
+    TapeRunRunner tapeRunRunner,
     TapeMediaControlService tapeMediaControl,
-    StopOperationHandler stopHandler,
     AgentDeviceStateStore deviceStore,
-    TapeMediaIdentificationReporter identificationReporter,
+    TapeFileHasher fileHasher,
+    TapeFileUploader fileUploader,
     ILogger? logger = null)
 {
     private readonly ILogger _logger = logger ?? NullLogger.Instance;
@@ -34,7 +34,7 @@ public sealed class AgentConnectionLoop(
 
     public async Task RunAsync(CancellationToken ct)
     {
-        using var _ = new ProcessLock(AgentPaths.DefaultLockPath);
+        using var _lock = new ProcessLock(AgentPaths.DefaultLockPath);
 
         var cfg = await AgentConfigLoader.LoadAsync(configPath, ct);
         var baseUri = new Uri(cfg.ApiBaseUrl.TrimEnd('/') + "/");
@@ -44,6 +44,13 @@ public sealed class AgentConnectionLoop(
             _logger.LogError("No credentials at {Path}. Run 'mra enroll' first.", credentialPath);
             return;
         }
+
+        // Initialise the uploader with credentials (once — hub updated on each connect).
+        fileUploader.Initialize(baseUri, cred.AgentId, cred.ClientSecret);
+
+        // Start background workers. They run for the lifetime of the process.
+        _ = fileHasher.StartAsync(ct);
+        _ = fileUploader.StartAsync(ct);
 
         AgentApiClient api = null!;
         var version = Assembly.GetExecutingAssembly().GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
@@ -95,6 +102,12 @@ public sealed class AgentConnectionLoop(
                 {
                     Interlocked.Exchange(ref reconnectAttempts, 0);
                     _logger.LogInformation("SignalR reconnected (ConnectionId={Id}). Re-registering with server.", connectionId);
+
+                    // Update hub reference for background workers so they can report
+                    // again after the connection is restored.
+                    fileHasher.SetHub(hub!);
+                    fileUploader.SetHub(hub!);
+
                     for (var attempt = 1; attempt <= 5; attempt++)
                     {
                         try
@@ -103,10 +116,6 @@ public sealed class AgentConnectionLoop(
                             await ReportCacheStatusAsync(hub!, CancellationToken.None);
                             await reportPublisher.PublishFullDiscoveryAsync(hub!, CancellationToken.None);
                             await reportPublisher.PublishActiveOperationsAsync(hub!, CancellationToken.None);
-                            // Retry any preflight-identification reports that were lost when
-                            // the connection dropped. Runs after device discovery so the server
-                            // already knows the devices before receiving their tape results.
-                            await identificationReporter.RetryPendingAsync(hub!, CancellationToken.None);
                             _logger.LogInformation("Re-registration completed after reconnect.");
                             return;
                         }
@@ -122,6 +131,8 @@ public sealed class AgentConnectionLoop(
                         }
                     }
                 };
+
+                // ── Hub handlers ───────────────────────────────────────────────
 
                 hub.On<AgentConfigCommand>("UpdateAgentConfig", async cmd =>
                 {
@@ -182,17 +193,19 @@ public sealed class AgentConnectionLoop(
                     }
                 });
 
-                hub.On<StartTapeReadCommand>("StartTapeRead", command =>
+                hub.On<StartTapeRunCommand>("StartTapeRun", command =>
                 {
-                    _logger.LogInformation("StartTapeRead received for device {DeviceId}.", command.TapeDeviceId);
-                    tapeReadRunner.Start(hub!, command);
+                    _logger.LogInformation(
+                        "StartTapeRun received: run {RunId} type={RunType} device {DeviceId}.",
+                        command.RunId, command.RunType, command.TapeDeviceId);
+                    tapeRunRunner.Start(hub!, command);
                     return Task.CompletedTask;
                 });
 
-                hub.On<StopTapeOperationCommand>("StopTapeOperation", command =>
+                hub.On<CancelTapeRunCommand>("CancelTapeRun", command =>
                 {
-                    _logger.LogInformation("StopTapeOperation received for device {DeviceId}.", command.TapeDeviceId);
-                    stopHandler.RequestStop(command);
+                    _logger.LogInformation("CancelTapeRun received for run {RunId}.", command.RunId);
+                    tapeRunRunner.RequestCancel(command.RunId);
                     return Task.CompletedTask;
                 });
 
@@ -232,6 +245,11 @@ public sealed class AgentConnectionLoop(
 
                 await hub.StartAsync(ct);
                 failureBackoff = TimeSpan.FromSeconds(2);
+
+                // Wire hub reference into background workers immediately after connect.
+                fileHasher.SetHub(hub);
+                fileUploader.SetHub(hub);
+
                 _logger.LogInformation("Connected to MezzoRecovery (agent {AgentId}).", cred.AgentId);
                 await hub.InvokeAsync("RegisterRuntime", hostname, os, arch, version, ct);
                 await ReportCacheStatusAsync(hub, ct);

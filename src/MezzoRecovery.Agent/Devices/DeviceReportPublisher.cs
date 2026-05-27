@@ -141,9 +141,9 @@ public sealed class DeviceReportPublisher(
 
     /// <summary>
     /// Maps the agent's internal device DTO to the wire DTO that the server's
-    /// AgentHub.ReportTapeDevices method expects. Converts enum fields to their
-    /// string names and maps the "deviceStatus" / "mediaStatus" field names that
-    /// the server-side <c>TapeDeviceReport</c> record uses.
+    /// AgentHub.ReportTapeDevices method expects. Agent-side status enums are richer
+    /// than the domain model; this method normalises them to the values the server
+    /// can parse and persist.
     /// </summary>
     private static TapeDeviceWireDto MapToWire(AgentTapeDeviceDto d) => new(
         StableDeviceKey:         d.StableDeviceKey,
@@ -159,6 +159,41 @@ public sealed class DeviceReportPublisher(
         IsAccessible:            d.IsAccessible,
         ReadBlockSizeBytes:      d.ReadBlockSizeBytes,
         ReadBufferSizeBytes:     d.ReadBufferSizeBytes,
-        DeviceStatus:            d.Status.ToString(),
-        MediaStatus:             d.MediaStatus.ToString());
+        DeviceStatus:            MapDeviceStatusToWire(d.Status),
+        MediaStatus:             MapMediaStatusToWire(d.MediaStatus));
+
+    // Normalises agent device status to domain-supported values.
+    // No-tape is modelled as Ready + MediaStatus.NoMedia; Unavailable maps to Error.
+    private static string MapDeviceStatusToWire(AgentTapeDeviceStatus s) => s switch
+    {
+        AgentTapeDeviceStatus.Present          => "Ready",
+        AgentTapeDeviceStatus.Ready            => "Ready",
+        AgentTapeDeviceStatus.NoMedia          => "Ready",
+        AgentTapeDeviceStatus.Busy             => "Busy",
+        AgentTapeDeviceStatus.PermissionDenied => "PermissionDenied",
+        AgentTapeDeviceStatus.Unavailable      => "Error",
+        AgentTapeDeviceStatus.Error            => "Error",
+        AgentTapeDeviceStatus.Removed          => "Removed",
+        AgentTapeDeviceStatus.CleaningRequired => "Busy",
+        _                                      => "Unknown",
+    };
+
+    // Normalises agent media status to domain-supported values.
+    // Active-operation states (Reading, Rewinding, etc.) collapse to Loaded because
+    // the server's live layer carries that detail via CurrentOperation.
+    private static string MapMediaStatusToWire(TapeMediaStatus s) => s switch
+    {
+        TapeMediaStatus.NoMedia          => "NoMedia",
+        TapeMediaStatus.Loaded           => "Loaded",
+        TapeMediaStatus.Identifying      => "Loading",
+        TapeMediaStatus.Ready            => "Ready",
+        TapeMediaStatus.Error            => "Error",
+        TapeMediaStatus.Reading          => "Loaded",
+        TapeMediaStatus.FastForwarding   => "Loaded",
+        TapeMediaStatus.Rewinding        => "Loaded",
+        TapeMediaStatus.Ejecting         => "Unloading",
+        TapeMediaStatus.CleaningRequired => "Error",
+        TapeMediaStatus.Empty            => "NoMedia",
+        _                                => "Unknown",
+    };
 }

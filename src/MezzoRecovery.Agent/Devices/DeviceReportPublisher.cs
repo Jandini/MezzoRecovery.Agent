@@ -174,26 +174,24 @@ public sealed class DeviceReportPublisher(
         AgentTapeDeviceStatus.Unavailable      => "Error",
         AgentTapeDeviceStatus.Error            => "Error",
         AgentTapeDeviceStatus.Removed          => "Removed",
-        AgentTapeDeviceStatus.CleaningRequired => "Busy",
         _                                      => "Unknown",
     };
 
-    // Normalises agent media status to domain-supported values.
-    // Active-operation states (Reading, Rewinding, etc.) collapse to Loaded because
-    // the server's live layer carries that detail via CurrentOperation.
+    // Maps agent media status to the domain-supported wire values.
+    // Operation states (Identifying, Reading, etc.) are passed through so the API
+    // can store and broadcast the full cartridge lifecycle to the UI.
     private static string MapMediaStatusToWire(TapeMediaStatus s) => s switch
     {
-        TapeMediaStatus.NoMedia          => "NoMedia",
-        TapeMediaStatus.Loaded           => "Loaded",
-        TapeMediaStatus.Identifying      => "Loading",
-        TapeMediaStatus.Ready            => "Ready",
-        TapeMediaStatus.Error            => "Error",
-        TapeMediaStatus.Reading          => "Loaded",
-        TapeMediaStatus.FastForwarding   => "Loaded",
-        TapeMediaStatus.Rewinding        => "Loaded",
-        TapeMediaStatus.Ejecting         => "Unloading",
-        TapeMediaStatus.CleaningRequired => "Error",
-        TapeMediaStatus.Empty            => "NoMedia",
-        _                                => "Unknown",
+        TapeMediaStatus.NoMedia        => "NoMedia",
+        TapeMediaStatus.Loaded         => "Loaded",
+        TapeMediaStatus.Identifying    => "Identifying",
+        TapeMediaStatus.Ready          => "Ready",
+        TapeMediaStatus.Error          => "Error",
+        TapeMediaStatus.Reading        => "Reading",
+        TapeMediaStatus.FastForwarding => "FastForwarding",
+        TapeMediaStatus.Rewinding      => "Rewinding",
+        TapeMediaStatus.Ejecting       => "Ejecting",
+        TapeMediaStatus.Empty          => "Empty",
+        _                              => "Unknown",
     };
 }

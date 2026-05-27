@@ -33,7 +33,6 @@ public enum AgentTapeDeviceStatus
     Unavailable = 6,
     Error = 7,
     Removed = 8,
-    CleaningRequired = 10,
 }
 
 /// <summary>
@@ -52,8 +51,7 @@ public enum TapeMediaStatus
     FastForwarding = 7,
     Rewinding = 8,
     Ejecting = 9,
-    CleaningRequired = 10,
-    Empty = 11,
+    Empty = 10,
 }
 
 public static class TapeMediaStatusExtensions

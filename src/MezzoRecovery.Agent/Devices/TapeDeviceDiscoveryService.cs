@@ -126,7 +126,7 @@ public sealed class TapeDeviceDiscoveryService(
                     return (AgentTapeDeviceStatus.Busy, labels, flags);
 
                 if (flags.HasFlag(TapeGstatFlags.CleaningRequested))
-                    return (AgentTapeDeviceStatus.CleaningRequired, labels, flags);
+                    return (AgentTapeDeviceStatus.Ready, labels, flags);
 
                 return (AgentTapeDeviceStatus.Ready, labels, flags);
             }
@@ -224,7 +224,7 @@ public sealed class TapeDeviceDiscoveryService(
                 if (!flags.HasFlag(TapeGstatFlags.Online))
                     return (AgentTapeDeviceStatus.Busy, labels, flags);
                 if (flags.HasFlag(TapeGstatFlags.CleaningRequested))
-                    return (AgentTapeDeviceStatus.CleaningRequired, labels, flags);
+                    return (AgentTapeDeviceStatus.Ready, labels, flags);
                 return (AgentTapeDeviceStatus.Ready, labels, flags);
             }
 

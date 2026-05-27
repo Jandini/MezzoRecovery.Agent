@@ -201,8 +201,11 @@ public sealed class TapeMediaLoaderComputeTests
     }
 
     [Fact]
-    public void GMT_CLN_on_ready_drive_yields_CleaningRequired()
+    public void GMT_CLN_on_ready_drive_is_ignored_falls_through_to_preflight_history()
     {
+        // GMT_CLN (cleaning required) is unreliable on Linux — the flag is ignored.
+        // The state machine falls through to preflight history: current preflight with
+        // no error and no detected buffer size returns Loaded (needs identification).
         var status = TapeMediaLoader.Compute(
             AgentTapeDeviceStatus.Ready,
             TapeGstatFlags.Online | TapeGstatFlags.CleaningRequested,
@@ -211,7 +214,7 @@ public sealed class TapeMediaLoaderComputeTests
             preflightError: null,
             lastDoorOpenAt: null);
 
-        Assert.Equal(TapeMediaStatus.CleaningRequired, status);
+        Assert.Equal(TapeMediaStatus.Loaded, status);
     }
 
     [Fact]

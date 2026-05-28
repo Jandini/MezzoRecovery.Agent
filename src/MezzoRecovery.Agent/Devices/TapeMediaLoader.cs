@@ -132,11 +132,12 @@ public sealed class TapeMediaLoader(
             return activeOperationType switch
             {
                 TapeOperationTypes.Preflight => TapeMediaStatus.Identifying,
-                TapeOperationTypes.Read => TapeMediaStatus.Reading,
-                TapeOperationTypes.Rewind => TapeMediaStatus.Rewinding,
-                TapeOperationTypes.Space => TapeMediaStatus.FastForwarding,
-                TapeOperationTypes.Eject => TapeMediaStatus.Ejecting,
-                _ => TapeMediaStatus.Unknown,
+                TapeOperationTypes.Read      => TapeMediaStatus.Reading,
+                TapeOperationTypes.Clone     => TapeMediaStatus.Reading,
+                TapeOperationTypes.Rewind    => TapeMediaStatus.Rewinding,
+                TapeOperationTypes.Space     => TapeMediaStatus.FastForwarding,
+                TapeOperationTypes.Eject     => TapeMediaStatus.Ejecting,
+                _                            => TapeMediaStatus.Unknown,
             };
         }
 

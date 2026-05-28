@@ -16,6 +16,7 @@ public sealed class TapeMediaControlService(
     TapeOperationStateStore state,
     AgentDeviceStateStore deviceStore,
     DeviceReportPublisher publisher,
+    TapeMediaLoader mediaLoader,
     ILogger<TapeMediaControlService> logger)
 {
     public void Execute(HubConnection hub, ExecuteTapeMediaActionCommand command) =>
@@ -85,8 +86,17 @@ public sealed class TapeMediaControlService(
             return;
         }
 
-        if (deviceStore.UpdateStatus(command.StableDeviceKey, AgentTapeDeviceStatus.Busy, "BUSY"))
-            await publisher.PublishCurrentAsync(hub, CancellationToken.None);
+        // Re-derive MediaStatus now that the operation is registered in the state store.
+        // TapeMediaLoader.Compute maps the active op type to Rewinding/FastForwarding/Ejecting,
+        // but only when called after TryRegister. Without this, PublishCurrentAsync sends
+        // Busy+Ready and the UI shows the correct badge but wrong status text until the
+        // 5-second poller tick calls Observe on its own.
+        var prePublish = deviceStore.GetByStableKey(command.StableDeviceKey);
+        if (prePublish is not null)
+            mediaLoader.Observe(hub, prePublish, flags: null, AgentTapeDeviceStatus.Busy);
+
+        deviceStore.UpdateStatus(command.StableDeviceKey, AgentTapeDeviceStatus.Busy, "BUSY");
+        await publisher.PublishCurrentAsync(hub, CancellationToken.None);
 
         try
         {

@@ -27,6 +27,7 @@ public sealed class TapeRunRunner(
     TapeOperationStateStore state,
     AgentDeviceStateStore deviceStore,
     DeviceReportPublisher publisher,
+    TapeMediaLoader mediaLoader,
     TapeFileHasher hasher,
     IOptions<TapeOperationOptions> options,
     ILogger<TapeRunRunner> logger)
@@ -122,8 +123,14 @@ public sealed class TapeRunRunner(
 
         _runToDevice[command.RunId] = command.TapeDeviceId;
 
-        if (deviceStore.UpdateStatus(command.StableDeviceKey, AgentTapeDeviceStatus.Busy, "BUSY"))
-            await publisher.PublishCurrentAsync(hub, CancellationToken.None);
+        // Re-derive MediaStatus now that the operation is registered so PublishCurrentAsync
+        // sends Busy+Reading rather than Busy+Ready (same fix as TapeMediaControlService).
+        var prePublish = deviceStore.GetByStableKey(command.StableDeviceKey);
+        if (prePublish is not null)
+            mediaLoader.Observe(hub, prePublish, flags: null, AgentTapeDeviceStatus.Busy);
+
+        deviceStore.UpdateStatus(command.StableDeviceKey, AgentTapeDeviceStatus.Busy, "BUSY");
+        await publisher.PublishCurrentAsync(hub, CancellationToken.None);
 
         var fileReporter = new TapeFileReporter(command, hasher, logger);
 

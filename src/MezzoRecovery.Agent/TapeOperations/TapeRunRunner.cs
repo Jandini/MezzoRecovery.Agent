@@ -200,8 +200,9 @@ public sealed class TapeRunRunner(
 
             try
             {
-                await publisher.PublishActiveOperationsAsync(hub, CancellationToken.None);
-                await publisher.PublishFullDiscoveryAsync(hub, CancellationToken.None);
+                // Probe and publish just this device immediately so the UX reflects the
+                // completed state without waiting for the next scheduled full discovery sweep.
+                await publisher.PublishDeviceStateRefreshAsync(hub, command.StableDeviceKey, CancellationToken.None);
             }
             catch (Exception ex)
             {

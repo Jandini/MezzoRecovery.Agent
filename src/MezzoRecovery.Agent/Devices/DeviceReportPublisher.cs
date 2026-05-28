@@ -183,7 +183,6 @@ public sealed class DeviceReportPublisher(
     private static string MapMediaStatusToWire(TapeMediaStatus s) => s switch
     {
         TapeMediaStatus.NoMedia        => "NoMedia",
-        TapeMediaStatus.InMotion       => "InMotion",
         TapeMediaStatus.Identifying    => "Identifying",
         TapeMediaStatus.Ready          => "Ready",
         TapeMediaStatus.Error          => "Error",

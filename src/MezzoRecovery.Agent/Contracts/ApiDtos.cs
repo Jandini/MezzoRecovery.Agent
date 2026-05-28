@@ -43,7 +43,6 @@ public enum TapeMediaStatus
 {
     Unknown        = 0,
     NoMedia        = 1,
-    InMotion       = 2,  // tape present, preflight about to start (first sighting or post-transport)
     Identifying    = 3,
     Ready          = 4,
     Error          = 5,
@@ -56,12 +55,11 @@ public enum TapeMediaStatus
 
 public static class TapeMediaStatusExtensions
 {
-    // True while the cartridge is mid-motion or about to start identification.
+    // True while the cartridge is mid-motion or being identified.
     // Used as a pre-flight gate so the agent rejects a new operation when the
     // hardware is already doing something.
     public static bool IsBusy(this TapeMediaStatus status) => status is
-        TapeMediaStatus.InMotion
-        or TapeMediaStatus.Identifying
+        TapeMediaStatus.Identifying
         or TapeMediaStatus.Reading
         or TapeMediaStatus.FastForwarding
         or TapeMediaStatus.Rewinding

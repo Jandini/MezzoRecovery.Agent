@@ -144,18 +144,13 @@ public sealed class TapeMediaControlService(
             };
 
             if (ok)
-            {
-                deviceStore.ClearPreflightResult(command.StableDeviceKey);
                 logger.LogInformation(
                     "ExecuteTapeMediaAction {Action}: tape command succeeded on device {DeviceId}.",
                     command.OperationType, command.TapeDeviceId);
-            }
             else
-            {
                 logger.LogWarning(
                     "ExecuteTapeMediaAction {Action}: tape command failed on device {DeviceId}.",
                     command.OperationType, command.TapeDeviceId);
-            }
         }
         catch (Exception ex)
         {
@@ -173,8 +168,9 @@ public sealed class TapeMediaControlService(
 
             try
             {
-                await publisher.PublishActiveOperationsAsync(hub, CancellationToken.None);
-                await publisher.PublishFullDiscoveryAsync(hub, CancellationToken.None);
+                // Probe and publish just this device immediately so the UX updates
+                // without waiting for the next scheduled full discovery sweep.
+                await publisher.PublishDeviceStateRefreshAsync(hub, command.StableDeviceKey, CancellationToken.None);
             }
             catch (Exception ex)
             {

@@ -12,9 +12,9 @@ namespace MezzoRecovery.Agent.Devices;
 /// <summary>
 /// Owns the tape-media lifecycle for every known device:
 /// <list type="bullet">
-///   <item>tracks the last time <c>DR_OPEN</c> was observed (eject signal),</item>
+///   <item>tracks the last no-media observation per device (DR_OPEN flag or NoMedia drive status),</item>
 ///   <item>derives <see cref="TapeMediaStatus"/> from drive flags + active operation + preflight history,</item>
-///   <item>autonomously triggers preflight (via <see cref="TapePreflightRunner"/>) on first sighting and after every eject cycle.</item>
+///   <item>autonomously triggers preflight on first sighting and on no-media → ready transitions (tape insertion).</item>
 /// </list>
 /// <para>
 /// Called by the status poller every tick and by the discovery publisher after every sweep —
@@ -29,9 +29,10 @@ public sealed class TapeMediaLoader(
     IOptions<TapeMediaLoaderOptions> options,
     ILogger<TapeMediaLoader> logger)
 {
-    // Per-device timestamp of the last DR_OPEN observation. Compared against the device's
-    // LastPreflightAt to decide whether a new preflight is warranted.
-    private readonly ConcurrentDictionary<string, DateTimeOffset> _lastDoorOpenAt = new(StringComparer.Ordinal);
+    // Per-device timestamp of the last no-media observation (DR_OPEN flag OR NoMedia drive status).
+    // Compared against LastPreflightAt to detect tape insertions: any no-media seen after the
+    // last preflight means a (possibly new) tape was subsequently inserted → re-identify.
+    private readonly ConcurrentDictionary<string, DateTimeOffset> _lastNoMediaAt = new(StringComparer.Ordinal);
 
     /// <summary>
     /// Feeds one observation into the loader. Updates the door-open tracker, recomputes
@@ -54,11 +55,16 @@ public sealed class TapeMediaLoader(
         if (string.IsNullOrEmpty(stableKey))
             return false;
 
-        // Stamp DR_OPEN so the policy can compare LastDoorOpenAt vs LastPreflightAt.
-        if (flags is { } f && f.HasFlag(TapeGstatFlags.DoorOpen))
-            _lastDoorOpenAt[stableKey] = DateTimeOffset.UtcNow;
+        // Track any no-media observation regardless of whether DR_OPEN is set.
+        // Linux does not reliably set DR_OPEN on all drives, so we also watch the
+        // drive status directly. Either source stamps the timestamp used by the
+        // trigger policy to detect tape insertion (no-media → ready transition).
+        var isNoMedia = (flags is { } f && f.HasFlag(TapeGstatFlags.DoorOpen))
+                     || driveStatus == AgentTapeDeviceStatus.NoMedia;
+        if (isNoMedia)
+            _lastNoMediaAt[stableKey] = DateTimeOffset.UtcNow;
 
-        _lastDoorOpenAt.TryGetValue(stableKey, out var lastDoorOpenAt);
+        _lastNoMediaAt.TryGetValue(stableKey, out var lastNoMediaAt);
         var activeOp = operationState.GetActiveOperationTypeByStableKey(stableKey);
         var isRewindActive = operationState.IsRewindActiveByStableKey(stableKey);
 
@@ -69,20 +75,20 @@ public sealed class TapeMediaLoader(
             device.LastPreflightAt,
             device.PreflightError,
             device.DetectedBlockBufferSizeBytes,
-            lastDoorOpenAt == default ? null : lastDoorOpenAt,
+            lastNoMediaAt == default ? null : lastNoMediaAt,
             isRewindActive);
 
         var changed = deviceStore.UpdateMediaStatus(stableKey, computed);
 
         var shouldStart = forcePreflight
             ? CanStartPreflight(driveStatus, flags, activeOp, device)
-            : ShouldTriggerPreflight(driveStatus, flags, activeOp, device, lastDoorOpenAt);
+            : ShouldTriggerPreflight(driveStatus, flags, activeOp, device, lastNoMediaAt);
 
         if (shouldStart)
         {
             logger.LogInformation(
-                "Triggering preflight for device {Key} (forced={Forced}, lastPreflightAt={LastPreflight}, lastDoorOpenAt={LastDoorOpen}).",
-                stableKey, forcePreflight, device.LastPreflightAt, lastDoorOpenAt == default ? null : (DateTimeOffset?)lastDoorOpenAt);
+                "Triggering preflight for device {Key} (forced={Forced}, lastPreflightAt={LastPreflight}, lastNoMediaAt={LastNoMedia}).",
+                stableKey, forcePreflight, device.LastPreflightAt, lastNoMediaAt == default ? null : (DateTimeOffset?)lastNoMediaAt);
             // Refresh (forcePreflight) rewinds before start: the tape may be anywhere.
             // Auto-trigger leaves the decision to the configured default (tape is usually at BOT on first sighting).
             trigger.Start(hub, device, rewindBeforeStart: forcePreflight);
@@ -91,10 +97,10 @@ public sealed class TapeMediaLoader(
         return changed;
     }
 
-    /// <summary>Drops the door-open tracker entry for a device that no longer exists.</summary>
+    /// <summary>Drops the no-media tracker entry for a device that no longer exists.</summary>
     public void ForgetDevice(string stableDeviceKey)
     {
-        _lastDoorOpenAt.TryRemove(stableDeviceKey, out _);
+        _lastNoMediaAt.TryRemove(stableDeviceKey, out _);
     }
 
     /// <summary>
@@ -109,7 +115,7 @@ public sealed class TapeMediaLoader(
         DateTimeOffset? lastPreflightAt,
         string? preflightError,
         int? detectedBlockBufferSizeBytes = null,
-        DateTimeOffset? lastDoorOpenAt = null,
+        DateTimeOffset? lastNoMediaAt = null,
         bool isRewindActive = false)
     {
         // 1. DR_OPEN (or the equivalent NoMedia drive status) dominates everything else —
@@ -145,28 +151,23 @@ public sealed class TapeMediaLoader(
         if (driveStatus != AgentTapeDeviceStatus.Ready)
             return TapeMediaStatus.Unknown;
 
-        // 4. Preflight history: a result is "current" iff no DR_OPEN happened since.
+        // 4. Preflight history: a result is "current" iff no no-media observation happened since.
         var preflightIsCurrent = lastPreflightAt is not null
-                                 && (lastDoorOpenAt is null || lastDoorOpenAt <= lastPreflightAt);
+                                 && (lastNoMediaAt is null || lastNoMediaAt <= lastPreflightAt);
 
         if (preflightIsCurrent && preflightError is not null)
             return TapeMediaStatus.Error;
         if (preflightIsCurrent)
-            // Three-way sentinel:
-            //   > 0  — preflight found data at this buffer size  → Ready
-            //     0  — preflight succeeded but read no blocks    → Empty (confirmed blank tape)
-            //  null  — preflight state was cleared by a transport operation; preflight will
-            //          be re-triggered immediately → InMotion while it waits to start.
             return detectedBlockBufferSizeBytes switch
             {
                 > 0 => TapeMediaStatus.Ready,
                 0   => TapeMediaStatus.Empty,
-                _   => TapeMediaStatus.InMotion,
+                _   => TapeMediaStatus.Identifying,  // ambiguous result — preflight will re-run
             };
 
-        // 5. Cartridge present but never identified (or stale after an eject) — preflight
-        //    will be triggered on the same tick.
-        return TapeMediaStatus.InMotion;
+        // 5. Cartridge present but not (or no longer) identified — preflight will fire
+        //    on the same tick (first sighting or tape re-inserted after no-media).
+        return TapeMediaStatus.Identifying;
     }
 
     private bool ShouldTriggerPreflight(
@@ -174,18 +175,18 @@ public sealed class TapeMediaLoader(
         TapeGstatFlags? flags,
         string? activeOp,
         AgentTapeDeviceDto device,
-        DateTimeOffset lastDoorOpenAt)
+        DateTimeOffset lastNoMediaAt)
     {
         if (!CanStartPreflight(driveStatus, flags, activeOp, device)) return false;
 
         // Fire when:
         //  a) the device has never been identified in this agent process (first sighting), OR
-        //  b) a DR_OPEN sighting has happened since the last preflight (cartridge swap possible), OR
-        //  c) a transport operation cleared the preflight result (rewind / fast-forward) —
-        //     re-identify so the status returns to Ready without requiring operator intervention.
+        //  b) no-media was observed after the last preflight — the tape was physically absent
+        //     (ejected or never present) and has now come back, so we must re-identify.
+        //     This is the only signal used: transport ops (rewind / FF) do NOT trigger
+        //     re-identification because no no-media observation occurs between them.
         if (device.LastPreflightAt is null) return true;
-        if (lastDoorOpenAt != default && lastDoorOpenAt > device.LastPreflightAt) return true;
-        if (device.DetectedBlockBufferSizeBytes is null) return true;
+        if (lastNoMediaAt != default && lastNoMediaAt > device.LastPreflightAt) return true;
 
         return false;
     }

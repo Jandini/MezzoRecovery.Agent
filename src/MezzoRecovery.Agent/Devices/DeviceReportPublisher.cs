@@ -144,8 +144,13 @@ public sealed class DeviceReportPublisher(
     /// AgentHub.ReportTapeDevices method expects. Agent-side status enums are richer
     /// than the domain model; this method normalises them to the values the server
     /// can parse and persist.
+    /// <para>
+    /// Exposed as <c>internal static</c> so <c>TapePreflightRunner</c> can reuse it
+    /// without taking a constructor dependency on <c>DeviceReportPublisher</c> (which
+    /// would close the DI cycle runner → publisher → loader → trigger → runner).
+    /// </para>
     /// </summary>
-    private static TapeDeviceWireDto MapToWire(AgentTapeDeviceDto d) => new(
+    internal static TapeDeviceWireDto MapToWire(AgentTapeDeviceDto d) => new(
         StableDeviceKey:         d.StableDeviceKey,
         LinuxDevicePath:         d.LinuxDevicePath,
         NonRewindingDevicePath:  d.NonRewindingDevicePath,
@@ -164,7 +169,7 @@ public sealed class DeviceReportPublisher(
 
     // Normalises agent device status to domain-supported values.
     // No-tape is modelled as Ready + MediaStatus.NoMedia; Unavailable maps to Error.
-    private static string MapDeviceStatusToWire(AgentTapeDeviceStatus s) => s switch
+    internal static string MapDeviceStatusToWire(AgentTapeDeviceStatus s) => s switch
     {
         AgentTapeDeviceStatus.Present          => "Ready",
         AgentTapeDeviceStatus.Ready            => "Ready",
@@ -180,7 +185,7 @@ public sealed class DeviceReportPublisher(
     // Maps agent media status to the domain-supported wire values.
     // Operation states (Identifying, Reading, etc.) are passed through so the API
     // can store and broadcast the full cartridge lifecycle to the UI.
-    private static string MapMediaStatusToWire(TapeMediaStatus s) => s switch
+    internal static string MapMediaStatusToWire(TapeMediaStatus s) => s switch
     {
         TapeMediaStatus.NoMedia        => "NoMedia",
         TapeMediaStatus.Identifying    => "Identifying",

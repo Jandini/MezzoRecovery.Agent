@@ -45,13 +45,17 @@ public sealed class TapePreflightRunner(
     // Inlined to avoid pulling DeviceReportPublisher in here: that would close a DI cycle
     // (runner → publisher → loader → trigger → runner), which Microsoft.Extensions.DependencyInjection
     // doesn't catch at BuildServiceProvider time and crashes the agent on first resolution.
+    // The mapping helpers are internal static on DeviceReportPublisher so we can reuse them.
     private async Task PublishDeviceSnapshotAsync(HubConnection hub, CancellationToken ct)
     {
         var snapshot = deviceStore.Snapshot();
         if (snapshot.Count == 0) return;
         try
         {
-            await hub.InvokeAsync("ReportTapeDevices", snapshot.ToArray(), ct).ConfigureAwait(false);
+            await hub.InvokeAsync(
+                "ReportTapeDevices",
+                snapshot.Select(DeviceReportPublisher.MapToWire).ToArray(),
+                ct).ConfigureAwait(false);
         }
         catch (Exception ex)
         {

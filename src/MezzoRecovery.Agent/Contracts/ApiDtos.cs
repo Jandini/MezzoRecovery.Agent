@@ -41,26 +41,27 @@ public enum AgentTapeDeviceStatus
 /// </summary>
 public enum TapeMediaStatus
 {
-    Unknown = 0,
-    NoMedia = 1,
-    Loaded = 2,
-    Identifying = 3,
-    Ready = 4,
-    Error = 5,
-    Reading = 6,
+    Unknown        = 0,
+    NoMedia        = 1,
+    InMotion       = 2,  // tape present, preflight about to start (first sighting or post-transport)
+    Identifying    = 3,
+    Ready          = 4,
+    Error          = 5,
+    Reading        = 6,
     FastForwarding = 7,
-    Rewinding = 8,
-    Ejecting = 9,
-    Empty = 10,
+    Rewinding      = 8,
+    Ejecting       = 9,
+    Empty          = 10,
 }
 
 public static class TapeMediaStatusExtensions
 {
-    // True while the cartridge is mid-motion. Used as a pre-flight gate so the
-    // agent rejects a new operation when the hardware is already doing something
-    // (e.g. the operator pressed the physical eject button on the drive).
+    // True while the cartridge is mid-motion or about to start identification.
+    // Used as a pre-flight gate so the agent rejects a new operation when the
+    // hardware is already doing something.
     public static bool IsBusy(this TapeMediaStatus status) => status is
-        TapeMediaStatus.Identifying
+        TapeMediaStatus.InMotion
+        or TapeMediaStatus.Identifying
         or TapeMediaStatus.Reading
         or TapeMediaStatus.FastForwarding
         or TapeMediaStatus.Rewinding

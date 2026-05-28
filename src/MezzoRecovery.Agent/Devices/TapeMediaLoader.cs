@@ -155,18 +155,18 @@ public sealed class TapeMediaLoader(
             // Three-way sentinel:
             //   > 0  — preflight found data at this buffer size  → Ready
             //     0  — preflight succeeded but read no blocks    → Empty (confirmed blank tape)
-            //  null  — preflight state was cleared by a transport operation; cartridge is
-            //          present and the drive was last seen ready, but identification has not
-            //          been re-run. Surface as Loaded so the operator knows to run Refresh.
+            //  null  — preflight state was cleared by a transport operation; preflight will
+            //          be re-triggered immediately → InMotion while it waits to start.
             return detectedBlockBufferSizeBytes switch
             {
                 > 0 => TapeMediaStatus.Ready,
                 0   => TapeMediaStatus.Empty,
-                _   => TapeMediaStatus.Loaded,
+                _   => TapeMediaStatus.InMotion,
             };
 
-        // 5. Cartridge present but never identified (or stale after an eject).
-        return TapeMediaStatus.Loaded;
+        // 5. Cartridge present but never identified (or stale after an eject) — preflight
+        //    will be triggered on the same tick.
+        return TapeMediaStatus.InMotion;
     }
 
     private bool ShouldTriggerPreflight(
@@ -180,9 +180,12 @@ public sealed class TapeMediaLoader(
 
         // Fire when:
         //  a) the device has never been identified in this agent process (first sighting), OR
-        //  b) a DR_OPEN sighting has happened since the last preflight (cartridge swap possible).
+        //  b) a DR_OPEN sighting has happened since the last preflight (cartridge swap possible), OR
+        //  c) a transport operation cleared the preflight result (rewind / fast-forward) —
+        //     re-identify so the status returns to Ready without requiring operator intervention.
         if (device.LastPreflightAt is null) return true;
         if (lastDoorOpenAt != default && lastDoorOpenAt > device.LastPreflightAt) return true;
+        if (device.DetectedBlockBufferSizeBytes is null) return true;
 
         return false;
     }

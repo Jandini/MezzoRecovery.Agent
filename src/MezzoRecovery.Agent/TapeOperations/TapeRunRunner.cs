@@ -248,7 +248,7 @@ public sealed class TapeRunRunner(
             MediaFingerprintHash:  null,
             HeaderBytes:           null,
             HeaderPreviewText:     null,
-            Status:                "Detected",
+            Status:                "Started",
             ErrorMessage:          null,
             LinuxDevicePath:       command.NonRewindingDevicePath,
             NonRewindingDevicePath: command.NonRewindingDevicePath);

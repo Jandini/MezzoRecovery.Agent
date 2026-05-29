@@ -108,6 +108,19 @@ public sealed class AgentConnectionLoop(
                     fileHasher.SetHub(hub!);
                     fileUploader.SetHub(hub!);
 
+                    // Physical devices may have changed while we were disconnected —
+                    // rescan SCSI hosts before republishing so new/removed drives are detected.
+                    try
+                    {
+                        RemoveStaleScsiTapeDevices();
+                        scsiEnumerator.ScanScsiHosts();
+                        _logger.LogInformation("Post-reconnect SCSI scan completed.");
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Post-reconnect SCSI rescan failed.");
+                    }
+
                     for (var attempt = 1; attempt <= 5; attempt++)
                     {
                         try
@@ -116,6 +129,9 @@ public sealed class AgentConnectionLoop(
                             await ReportCacheStatusAsync(hub!, CancellationToken.None);
                             await reportPublisher.PublishFullDiscoveryAsync(hub!, CancellationToken.None);
                             await reportPublisher.PublishActiveOperationsAsync(hub!, CancellationToken.None);
+                            // Fire preflight for any tape that was loaded while we were offline —
+                            // we can't assume the same cartridge is still present.
+                            _ = TriggerReconnectPreflightAsync(hub!);
                             _logger.LogInformation("Re-registration completed after reconnect.");
                             return;
                         }
@@ -323,6 +339,30 @@ public sealed class AgentConnectionLoop(
         catch (Exception ex)
         {
             _logger.LogError(ex, "Post-startup SCSI rescan failed.");
+        }
+    }
+
+    private async Task TriggerReconnectPreflightAsync(HubConnection hub)
+    {
+        try
+        {
+            // Brief settling delay so PublishFullDiscoveryAsync store updates are visible.
+            await Task.Delay(TimeSpan.FromMilliseconds(500));
+            foreach (var device in deviceStore.Snapshot())
+            {
+                // Only devices with a tape loaded need preflight — we can't assume the
+                // same cartridge is present as before the disconnect.
+                if (device.MediaStatus is TapeMediaStatus.NoMedia or TapeMediaStatus.Unknown)
+                    continue;
+                // PublishDeviceStateRefreshAsync skips busy devices internally.
+                await reportPublisher.PublishDeviceStateRefreshAsync(
+                    hub, device.StableDeviceKey, CancellationToken.None, forcePreflight: true);
+            }
+            _logger.LogInformation("Post-reconnect preflight complete.");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Post-reconnect preflight trigger failed.");
         }
     }
 

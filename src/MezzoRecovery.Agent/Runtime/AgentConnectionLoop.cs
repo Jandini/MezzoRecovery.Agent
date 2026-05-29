@@ -202,11 +202,13 @@ public sealed class AgentConnectionLoop(
                     return Task.CompletedTask;
                 });
 
-                hub.On<CancelTapeRunCommand>("CancelTapeRun", command =>
+                hub.On<CancelTapeRunCommand>("CancelTapeRun", async command =>
                 {
                     _logger.LogInformation("CancelTapeRun received for run {RunId}.", command.RunId);
                     tapeRunRunner.RequestCancel(command.RunId);
-                    return Task.CompletedTask;
+                    // Immediately report the updated operation snapshot so the API and UI
+                    // know the cancel was received even before the run terminates.
+                    await reportPublisher.PublishActiveOperationsAsync(hub!, CancellationToken.None);
                 });
 
                 hub.On<ExecuteTapeMediaActionCommand>("ExecuteTapeMediaAction", command =>

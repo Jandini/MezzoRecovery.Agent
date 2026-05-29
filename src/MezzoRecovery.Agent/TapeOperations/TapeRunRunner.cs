@@ -137,7 +137,7 @@ public sealed class TapeRunRunner(
         try
         {
             // ── Step 1: Preflight ──────────────────────────────────────────────
-            await RunPreflightStepAsync(hub, command, snapshot, effectiveBlockSize, effectiveBufferSize);
+            await RunPreflightStepAsync(hub, command);
 
             // ── Step 2: Clone / Read ───────────────────────────────────────────
             var mainOpId = command.CloneOperationId ?? command.ReadOperationId;
@@ -213,12 +213,7 @@ public sealed class TapeRunRunner(
 
     // ── Preflight step ─────────────────────────────────────────────────────────
 
-    private async Task RunPreflightStepAsync(
-        HubConnection hub,
-        StartTapeRunCommand command,
-        AgentTapeDeviceDto? snapshot,
-        int blockSize,
-        int bufferSize)
+    private async Task RunPreflightStepAsync(HubConnection hub, StartTapeRunCommand command)
     {
         var now = DateTimeOffset.UtcNow;
 
@@ -227,34 +222,12 @@ public sealed class TapeRunRunner(
 
         // Use cached detection data — the clone service rewinds on its own,
         // so running IPreflightService here would cause a double-rewind.
-        var deviceStatus = snapshot?.Status.ToString() ?? "Unknown";
-        var mediaStatus  = snapshot?.MediaStatus.ToString() ?? "Unknown";
-
-        // Effective block / buffer — prefer command values over cached
-        int? detectedBlock  = blockSize  > 0 ? blockSize  : snapshot?.DetectedBlockSizeBytes;
-        int? detectedBuffer = bufferSize > 0 ? bufferSize : snapshot?.DetectedBlockBufferSizeBytes;
-
-        var detection = new MediaDetectionReport(
-            TapeDeviceId:          command.TapeDeviceId,
-            TapeRunId:             command.RunId,
-            PreflightOperationId:  command.PreflightOperationId,
-            DeviceStatus:          deviceStatus,
-            MediaStatus:           mediaStatus,
-            MediaFormat:           null,
-            DetectorName:          null,
-            DetectedBlockSizeBytes: detectedBlock,
-            DetectedBufferSizeBytes: detectedBuffer,
-            MediaHeaderHash:       null,
-            MediaSetHash:          null,
-            MediaFingerprintHash:  null,
-            HeaderBytes:           null,
-            HeaderPreviewText:     null,
-            Status:                "Started",
-            ErrorMessage:          null,
-            LinuxDevicePath:       command.NonRewindingDevicePath,
-            NonRewindingDevicePath: command.NonRewindingDevicePath);
-
-        await HubSendAsync(hub, "ReportMediaDetection", detection);
+        // We do NOT send ReportMediaDetection here: a "Started" detection would
+        // cause RecordDetectionAsync to null out the device's CurrentTapeMediaId,
+        // which erases tape metadata (format, label, etc.) from the card for the
+        // entire duration of the read. The tape is already identified from the
+        // preceding standalone preflight; the operation lifecycle events below are
+        // sufficient for run tracking.
 
         await HubSendAsync(hub, "ReportTapeOperationCompleted",
             new TapeOperationCompletedReport(
@@ -380,10 +353,17 @@ public sealed class TapeRunRunner(
 
     private void ClearStalePreflightError(HubConnection hub, StartTapeRunCommand command)
     {
+        // Preserve the existing detected sizes when the command does not specify them
+        // (auto-detect runs). Passing null would wipe DetectedBlockBufferSizeBytes and
+        // cause TapeMediaLoader.Compute to return Identifying instead of Ready after
+        // the run ends or is cancelled.
+        var existing   = deviceStore.GetByStableKey(command.StableDeviceKey);
+        var blockSize  = command.BlockSizeBytes  > 0 ? command.BlockSizeBytes  : existing?.DetectedBlockSizeBytes;
+        var bufferSize = command.BufferSizeBytes > 0 ? command.BufferSizeBytes : existing?.DetectedBlockBufferSizeBytes;
         if (deviceStore.UpdatePreflightResult(
                 command.StableDeviceKey,
-                command.BlockSizeBytes  > 0 ? command.BlockSizeBytes  : null,
-                command.BufferSizeBytes > 0 ? command.BufferSizeBytes : null,
+                blockSize,
+                bufferSize,
                 null,
                 DateTimeOffset.UtcNow))
             _ = publisher.PublishCurrentAsync(hub, CancellationToken.None);

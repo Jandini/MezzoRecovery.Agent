@@ -469,7 +469,19 @@ public sealed class AgentConnectionLoop(
         try
         {
             Directory.CreateDirectory(path);
-            return (new DriveInfo(path).AvailableFreeSpace, null);
+            var fullPath = Path.GetFullPath(path);
+            var drive = DriveInfo.GetDrives()
+                .Where(d =>
+                {
+                    var name = d.Name.TrimEnd(Path.DirectorySeparatorChar);
+                    return fullPath.StartsWith(name + Path.DirectorySeparatorChar, StringComparison.Ordinal)
+                           || fullPath == name;
+                })
+                .OrderByDescending(d => d.Name.Length)
+                .FirstOrDefault();
+            return drive is not null
+                ? (drive.AvailableFreeSpace, null)
+                : (null, $"No mounted drive found for path: {fullPath}");
         }
         catch (Exception ex)
         {

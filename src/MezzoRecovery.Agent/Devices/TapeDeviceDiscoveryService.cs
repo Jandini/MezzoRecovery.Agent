@@ -1,3 +1,4 @@
+using System.Text;
 using MezzoRecovery.Agent.Contracts;
 using MezzoRecovery.TapeDrive.Abstractions;
 using MezzoRecovery.TapeDrive.Linux;
@@ -55,6 +56,9 @@ public sealed class TapeDeviceDiscoveryService(
                     (status, mtStatusLabels, _) = ProbeTapeStatus(probePath, accessible);
                 }
 
+                var baseName = nonRewinding ?? rewinding;
+                var (sysfsPath, scsiAddress, serialNumber) = ReadSysfsDeviceInfo(baseName);
+
                 result.Add(new AgentTapeDeviceDto
                 {
                     StableDeviceKey = stableKey,
@@ -64,6 +68,9 @@ public sealed class TapeDeviceDiscoveryService(
                     Vendor = NullIfEmpty(drive.Vendor),
                     Model = NullIfEmpty(drive.Model),
                     Revision = NullIfEmpty(drive.Revision),
+                    SerialNumber = serialNumber,
+                    SysfsPath = sysfsPath,
+                    ScsiAddress = scsiAddress,
                     Status = status,
                     MtStatusLabels = mtStatusLabels,
                     IsPresent = true,
@@ -260,6 +267,59 @@ public sealed class TapeDeviceDiscoveryService(
     {
         var path = nonRewindingPath ?? devicePath;
         return path.TrimStart('/');
+    }
+
+    /// <summary>
+    /// Reads SysfsPath, ScsiAddress, and SerialNumber from the kernel's scsi_tape sysfs
+    /// class entry for a given base device name (e.g. "nst0", "st0"). All fields are
+    /// optional enrichment; failures return nulls silently.
+    /// </summary>
+    private static (string? SysfsPath, string? ScsiAddress, string? SerialNumber) ReadSysfsDeviceInfo(string? baseName)
+    {
+        if (string.IsNullOrEmpty(baseName)) return (null, null, null);
+
+        var sysfsClassPath = $"/sys/class/scsi_tape/{baseName}";
+        if (!Directory.Exists(sysfsClassPath)) return (null, null, null);
+
+        try
+        {
+            string? sysfsPath = null;
+            string? scsiAddress = null;
+
+            var resolved = Directory.ResolveLinkTarget(sysfsClassPath, returnFinalTarget: true);
+            if (resolved is not null)
+            {
+                sysfsPath = resolved.FullName;
+                // Canonical path structure: .../H:C:T:L/scsi_tape/nst0
+                var scsiTapeDir = Path.GetDirectoryName(sysfsPath);       // .../H:C:T:L/scsi_tape
+                var scsiDeviceDir = scsiTapeDir is not null
+                    ? Path.GetDirectoryName(scsiTapeDir)
+                    : null;                                                // .../H:C:T:L
+                if (scsiDeviceDir is not null)
+                    scsiAddress = Path.GetFileName(scsiDeviceDir);
+            }
+
+            // VPD page 0x80 (Unit Serial Number) is exposed as a binary sysfs attribute.
+            // Format: [peripheral_type][0x80][reserved][length][serial bytes…]
+            string? serialNumber = null;
+            var vpdPath = $"/sys/class/scsi_tape/{baseName}/device/vpd_pg80";
+            if (File.Exists(vpdPath))
+            {
+                var vpd = File.ReadAllBytes(vpdPath);
+                if (vpd.Length >= 4 && vpd[1] == 0x80)
+                {
+                    var len = vpd[3];
+                    if (len > 0 && vpd.Length >= 4 + len)
+                        serialNumber = Encoding.ASCII.GetString(vpd, 4, len).Trim();
+                }
+            }
+
+            return (sysfsPath, scsiAddress, string.IsNullOrWhiteSpace(serialNumber) ? null : serialNumber);
+        }
+        catch
+        {
+            return (null, null, null);
+        }
     }
 
     private static bool IsBaseDeviceName(string name, string prefix)

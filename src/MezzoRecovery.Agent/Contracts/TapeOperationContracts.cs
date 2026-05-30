@@ -122,8 +122,6 @@ public sealed record TapeRunProgressReport(
     [property: JsonPropertyName("blocksRead")] long BlocksRead,
     [property: JsonPropertyName("filemarksRead")] long FilemarksRead,
     [property: JsonPropertyName("tapeFilesCreated")] int TapeFilesCreated,
-    [property: JsonPropertyName("bytesUploaded")] long BytesUploaded,
-    [property: JsonPropertyName("filesUploaded")] int FilesUploaded,
     [property: JsonPropertyName("currentBlock")] long? CurrentBlock,
     [property: JsonPropertyName("currentFileIndex")] int? CurrentFileIndex,
     [property: JsonPropertyName("currentOperationType")] string? CurrentOperationType,

@@ -385,8 +385,6 @@ public sealed class TapeRunRunner(
                 BlocksRead:                  op.LastBlocksRead,
                 FilemarksRead:               op.LastFilemarksRead,
                 TapeFilesCreated:            Math.Max(0, stats.CurrentFileNumber - 1),
-                BytesUploaded:               0,
-                FilesUploaded:               0,
                 CurrentBlock:                op.LastBlocksRead,
                 CurrentFileIndex:            stats.CurrentFileNumber,
                 CurrentOperationType:        operationType,

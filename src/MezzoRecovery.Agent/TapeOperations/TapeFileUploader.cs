@@ -17,6 +17,7 @@ namespace MezzoRecovery.Agent.TapeOperations;
 /// </summary>
 public sealed class TapeFileUploader(ILogger<TapeFileUploader> logger)
 {
+    private const int MaxServerErrorAttempts = 10;
     public sealed record WorkItem(
         Guid  FileId,
         Guid  RunId,
@@ -137,19 +138,36 @@ public sealed class TapeFileUploader(ILogger<TapeFileUploader> logger)
                 }
 
                 var body = await resp.Content.ReadAsStringAsync(ct);
+                var statusCode = (int)resp.StatusCode;
                 logger.LogWarning(
                     "Upload HTTP {Status} for file {FileId}: {Body}.",
-                    (int)resp.StatusCode, item.FileId, body);
+                    statusCode, item.FileId, body);
 
-                // 4xx errors are not retryable (bad request / not found)
-                if ((int)resp.StatusCode is >= 400 and < 500)
+                if (IsNonRetryableUploadFailure(statusCode, body))
                 {
-                    await ReportUploadFailedAsync(item, "HttpError",
-                        $"HTTP {(int)resp.StatusCode}: {body}");
+                    await ReportUploadFailedAsync(item, "StorageError",
+                        $"HTTP {statusCode}: {body}");
                     return;
                 }
 
-                // 5xx → retry
+                // 4xx errors are not retryable (bad request / not found)
+                if (statusCode is >= 400 and < 500)
+                {
+                    await ReportUploadFailedAsync(item, "HttpError",
+                        $"HTTP {statusCode}: {body}");
+                    return;
+                }
+
+                // 5xx → retry with cap
+                if (attempt + 1 >= MaxServerErrorAttempts)
+                {
+                    logger.LogError(
+                        "Upload failed for file {FileId} after {Attempts} server-error attempts.",
+                        item.FileId, MaxServerErrorAttempts);
+                    await ReportUploadFailedAsync(item, "HttpError",
+                        $"HTTP {statusCode} after {MaxServerErrorAttempts} attempts: {body}");
+                    return;
+                }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -159,9 +177,20 @@ public sealed class TapeFileUploader(ILogger<TapeFileUploader> logger)
             {
                 logger.LogWarning(ex,
                     "Upload attempt {Attempt} threw for file {FileId}.", attempt + 1, item.FileId);
+
+                if (attempt + 1 >= MaxServerErrorAttempts)
+                {
+                    await ReportUploadFailedAsync(item, "NetworkError", ex.Message);
+                    return;
+                }
             }
         }
     }
+
+    private static bool IsNonRetryableUploadFailure(int statusCode, string body) =>
+        statusCode == 507
+        || body.Contains("\"retryable\":false", StringComparison.OrdinalIgnoreCase)
+        || body.Contains("\"retryable\": false", StringComparison.OrdinalIgnoreCase);
 
     private void ReportUploadProgress(WorkItem item, long bytesUploaded, long totalBytes)
     {

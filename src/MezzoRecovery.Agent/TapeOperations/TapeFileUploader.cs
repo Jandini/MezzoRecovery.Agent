@@ -138,22 +138,32 @@ public sealed class TapeFileUploader(ILogger<TapeFileUploader> logger)
                 using var watchdogCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 watchdogCts.CancelAfter(TimeSpan.FromSeconds(60));
 
-                var nextLogAt = 0L;
-                const long logEvery = 1 * 1024 * 1024; // log every 1 MB
+                var nextLogAt    = 0L;
+                var lastLogBytes = 0L;
+                var lastLogAt    = DateTimeOffset.UtcNow;
+                const long logEvery = 1 * 1024 * 1024; // report every 1 MB
 
                 // ProgressStream fires every 16 KB → watchdog is reset on each callback.
-                // Log lines and hub reports are throttled to every 1 MB.
+                // Log lines and hub reports are throttled to every 1 MB; throughput is
+                // calculated from the bytes/time delta between consecutive reports.
                 using var stream = new ProgressStream(
                     File.OpenRead(item.FilePath),
                     bytesRead =>
                     {
                         watchdogCts.CancelAfter(TimeSpan.FromSeconds(60));
                         if (bytesRead < nextLogAt) return;
-                        nextLogAt = bytesRead + logEvery;
+                        var now      = DateTimeOffset.UtcNow;
+                        var elapsed  = (now - lastLogAt).TotalSeconds;
+                        var throughput = elapsed > 0.001
+                            ? (long?)((bytesRead - lastLogBytes) / elapsed)
+                            : null;
+                        lastLogBytes = bytesRead;
+                        lastLogAt    = now;
+                        nextLogAt    = bytesRead + logEvery;
                         logger.LogInformation(
                             "Uploading {FileId}: {Sent:F1} / {Total:F1} MB.",
                             item.FileId, bytesRead / 1_048_576.0, totalBytes / 1_048_576.0);
-                        ReportUploadProgress(item, bytesRead, totalBytes);
+                        ReportUploadProgress(item, bytesRead, totalBytes, throughput);
                     },
                     progressIntervalBytes: 16 * 1024);
 
@@ -168,7 +178,7 @@ public sealed class TapeFileUploader(ILogger<TapeFileUploader> logger)
                     "Uploading file {FileId} ({TotalMB:F1} MB) attempt {Attempt}.",
                     item.FileId, totalBytes / 1_048_576.0, attempt + 1);
 
-                ReportUploadProgress(item, 0, totalBytes);
+                ReportUploadProgress(item, 0, totalBytes, null);
 
                 using var resp = await http.SendAsync(
                     req, HttpCompletionOption.ResponseHeadersRead, watchdogCts.Token);
@@ -250,7 +260,7 @@ public sealed class TapeFileUploader(ILogger<TapeFileUploader> logger)
         || body.Contains("\"retryable\":false", StringComparison.OrdinalIgnoreCase)
         || body.Contains("\"retryable\": false", StringComparison.OrdinalIgnoreCase);
 
-    private void ReportUploadProgress(WorkItem item, long bytesUploaded, long totalBytes)
+    private void ReportUploadProgress(WorkItem item, long bytesUploaded, long totalBytes, long? throughput)
     {
         var hub = _hub;
         if (hub is null) return;
@@ -263,7 +273,7 @@ public sealed class TapeFileUploader(ILogger<TapeFileUploader> logger)
                         FileId:                   item.FileId,
                         BytesUploaded:             bytesUploaded,
                         TotalBytes:                totalBytes,
-                        ThroughputBytesPerSecond: null));
+                        ThroughputBytesPerSecond: throughput));
             }
             catch { /* best-effort */ }
         });

@@ -130,13 +130,32 @@ public sealed class TapeFileUploader(ILogger<TapeFileUploader> logger)
                 var url = new Uri(_baseUri,
                     $"api/agent/tape/runs/{item.RunId}/files/{item.FileId}/upload");
 
-                using var http      = new HttpClient { Timeout = TimeSpan.FromHours(2) };
-                using var fileStream = File.OpenRead(item.FilePath);
-                var totalBytes      = item.FileSizeBytes;
+                using var http = new HttpClient { Timeout = TimeSpan.FromHours(2) };
+                var totalBytes = item.FileSizeBytes;
 
-                // Wrap with a progress-reporting stream that fires hub messages every 4 MB.
-                using var stream = new ProgressStream(fileStream, bytesRead =>
-                    ReportUploadProgress(item, bytesRead, totalBytes), progressIntervalBytes: 4 * 1024 * 1024);
+                // Stall watchdog: cancel if no bytes flow for 60 s. Handles silently dead TCP
+                // connections that would otherwise block the consumer for up to 2 hours.
+                using var watchdogCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                watchdogCts.CancelAfter(TimeSpan.FromSeconds(60));
+
+                var nextLogAt = 0L;
+                const long logEvery = 1 * 1024 * 1024; // log every 1 MB
+
+                // ProgressStream fires every 16 KB → watchdog is reset on each callback.
+                // Log lines and hub reports are throttled to every 1 MB.
+                using var stream = new ProgressStream(
+                    File.OpenRead(item.FilePath),
+                    bytesRead =>
+                    {
+                        watchdogCts.CancelAfter(TimeSpan.FromSeconds(60));
+                        if (bytesRead < nextLogAt) return;
+                        nextLogAt = bytesRead + logEvery;
+                        logger.LogInformation(
+                            "Uploading {FileId}: {Sent:F1} / {Total:F1} MB.",
+                            item.FileId, bytesRead / 1_048_576.0, totalBytes / 1_048_576.0);
+                        ReportUploadProgress(item, bytesRead, totalBytes);
+                    },
+                    progressIntervalBytes: 16 * 1024);
 
                 var req = new HttpRequestMessage(HttpMethod.Put, url)
                 {
@@ -146,18 +165,19 @@ public sealed class TapeFileUploader(ILogger<TapeFileUploader> logger)
                 req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
 
                 logger.LogInformation(
-                    "Uploading file {FileId} ({Bytes} bytes) attempt {Attempt}.",
-                    item.FileId, totalBytes, attempt + 1);
+                    "Uploading file {FileId} ({TotalMB:F1} MB) attempt {Attempt}.",
+                    item.FileId, totalBytes / 1_048_576.0, attempt + 1);
 
                 ReportUploadProgress(item, 0, totalBytes);
 
-                using var resp = await http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+                using var resp = await http.SendAsync(
+                    req, HttpCompletionOption.ResponseHeadersRead, watchdogCts.Token);
 
                 if (resp.IsSuccessStatusCode)
                 {
                     logger.LogInformation(
-                        "Upload succeeded for file {FileId} ({Bytes} bytes).",
-                        item.FileId, totalBytes);
+                        "Upload succeeded for file {FileId} ({TotalMB:F1} MB).",
+                        item.FileId, totalBytes / 1_048_576.0);
                     return;   // success — done
                 }
 
@@ -196,6 +216,20 @@ public sealed class TapeFileUploader(ILogger<TapeFileUploader> logger)
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
                 return;
+            }
+            catch (OperationCanceledException)
+            {
+                // Watchdog fired — connection stalled with no progress for 60 s.
+                logger.LogWarning(
+                    "Upload stalled (no progress for 60 s) for file {FileId} attempt {Attempt}. Will retry.",
+                    item.FileId, attempt + 1);
+
+                if (attempt + 1 >= MaxServerErrorAttempts)
+                {
+                    await ReportUploadFailedAsync(item, "NetworkError",
+                        "Upload stalled — no progress for 60 s.");
+                    return;
+                }
             }
             catch (Exception ex)
             {
@@ -275,6 +309,8 @@ public sealed class TapeFileUploader(ILogger<TapeFileUploader> logger)
     /// <summary>
     /// Transparent read-only stream wrapper that invokes a callback every
     /// <paramref name="progressIntervalBytes"/> bytes so the caller can report upload progress.
+    /// Delegates CanSeek/Length/Position/Seek to the inner stream so that
+    /// <see cref="StreamContent"/> can still compute and send a Content-Length header.
     /// Compatible with Native AOT — no reflection used.
     /// </summary>
     private sealed class ProgressStream(
@@ -285,14 +321,16 @@ public sealed class TapeFileUploader(ILogger<TapeFileUploader> logger)
         private long _bytesRead;
         private long _lastReported;
 
-        public override bool CanRead  => true;
-        public override bool CanSeek  => false;
+        // Delegate all stream capabilities to the inner stream so StreamContent
+        // can set Content-Length (requires CanSeek = true + Length/Position).
+        public override bool CanRead  => inner.CanRead;
+        public override bool CanSeek  => inner.CanSeek;
         public override bool CanWrite => false;
         public override long Length   => inner.Length;
         public override long Position
         {
             get => inner.Position;
-            set => throw new NotSupportedException();
+            set => inner.Position = value;
         }
 
         public override int Read(byte[] buffer, int offset, int count)
@@ -330,8 +368,8 @@ public sealed class TapeFileUploader(ILogger<TapeFileUploader> logger)
         }
 
         public override void Flush() => inner.Flush();
-        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
-        public override void SetLength(long value) => throw new NotSupportedException();
+        public override long Seek(long offset, SeekOrigin origin) => inner.Seek(offset, origin);
+        public override void SetLength(long value) => inner.SetLength(value);
         public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
 
         protected override void Dispose(bool disposing)

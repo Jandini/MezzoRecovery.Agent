@@ -65,12 +65,24 @@ public sealed class TapeFileUploader(ILogger<TapeFileUploader> logger)
 
     private async Task ConsumeAsync(CancellationToken ct)
     {
-        await foreach (var item in _queue.Reader.ReadAllAsync(ct))
+        logger.LogInformation("Upload consumer started.");
+        try
         {
-            logger.LogInformation(
-                "Upload dequeued for file {FileId} (run {RunId}).",
-                item.FileId, item.RunId);
-            await UploadWithRetryAsync(item, ct);
+            await foreach (var item in _queue.Reader.ReadAllAsync(ct))
+            {
+                logger.LogInformation(
+                    "Upload dequeued for file {FileId} (run {RunId}).",
+                    item.FileId, item.RunId);
+                await UploadWithRetryAsync(item, ct);
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            logger.LogInformation("Upload consumer stopped (shutdown).");
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Upload consumer faulted — uploads will not proceed.");
         }
     }
 

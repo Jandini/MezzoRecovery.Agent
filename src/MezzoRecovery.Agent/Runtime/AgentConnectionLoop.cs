@@ -49,8 +49,8 @@ public sealed class AgentConnectionLoop(
         fileUploader.Initialize(baseUri, cred.AgentId, cred.ClientSecret);
 
         // Start background workers. They run for the lifetime of the process.
-        _ = fileHasher.StartAsync(ct);
-        _ = fileUploader.StartAsync(ct);
+        ObserveWorker(fileHasher.StartAsync(ct), "hasher");
+        ObserveWorker(fileUploader.StartAsync(ct), "uploader");
 
         AgentApiClient api = null!;
         var version = Assembly.GetExecutingAssembly().GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
@@ -552,6 +552,17 @@ public sealed class AgentConnectionLoop(
         {
             return (null, ex.Message);
         }
+    }
+
+    private void ObserveWorker(Task task, string name)
+    {
+        _ = task.ContinueWith(t =>
+        {
+            if (t.IsFaulted)
+                _logger.LogError(t.Exception, "Background worker '{Name}' faulted unexpectedly.", name);
+            else if (t.IsCanceled)
+                _logger.LogDebug("Background worker '{Name}' was cancelled.", name);
+        }, TaskScheduler.Default);
     }
 
     private sealed class UnboundedRetryPolicy : IRetryPolicy

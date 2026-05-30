@@ -230,16 +230,26 @@ internal sealed class TapeFileReporter : IAsyncDisposable
         long avg     = ComputeAvg(now, bytesAtBoundary);
         long endBlock = _fileStartBlocksTotal + blocksAtBoundary;
 
-        await SendAsync(hub, "ReportTapeFileReadCompleted",
-            new TapeFileReadCompletedReport(
-                FileId:                   id,
-                SizeBytes:                Math.Max(0, bytesAtBoundary),
-                EndBlock:                 endBlock,
-                BlockCount:               Math.Max(0, blocksAtBoundary),
-                FilemarkAfter:            filemarkAfter,
-                ThroughputBytesPerSecond: avg,
-                Succeeded:                true,
-                ErrorMessage:             null));
+        // Use InvokeAsync (not SendAsync) so the server has committed the TapeFileUpload
+        // record before we hand off to the hasher. Without this, a fast hash completes
+        // and the uploader PUTs before the upload row exists → 404 non-retryable failure.
+        try
+        {
+            await hub.InvokeAsync("ReportTapeFileReadCompleted",
+                new TapeFileReadCompletedReport(
+                    FileId:                   id,
+                    SizeBytes:                Math.Max(0, bytesAtBoundary),
+                    EndBlock:                 endBlock,
+                    BlockCount:               Math.Max(0, blocksAtBoundary),
+                    FilemarkAfter:            filemarkAfter,
+                    ThroughputBytesPerSecond: avg,
+                    Succeeded:                true,
+                    ErrorMessage:             null));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "ReportTapeFileReadCompleted failed for file {FileId}.", id);
+        }
 
         // In Clone mode, hand the completed .tic file off to the hasher.
         if (_isClone)

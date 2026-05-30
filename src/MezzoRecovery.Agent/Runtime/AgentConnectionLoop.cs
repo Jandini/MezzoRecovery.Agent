@@ -22,11 +22,11 @@ public sealed class AgentConnectionLoop(
     DeviceDiscoveryOptions discoveryOptions,
     IScsiHostEnumerator scsiEnumerator,
     IScsiTapeDeviceManager scsiTapeDeviceManager,
-    TapeReadRunner tapeReadRunner,
+    TapeRunRunner tapeRunRunner,
     TapeMediaControlService tapeMediaControl,
-    StopOperationHandler stopHandler,
     AgentDeviceStateStore deviceStore,
-    TapeMediaIdentificationReporter identificationReporter,
+    TapeFileHasher fileHasher,
+    TapeFileUploader fileUploader,
     ILogger? logger = null)
 {
     private readonly ILogger _logger = logger ?? NullLogger.Instance;
@@ -34,7 +34,7 @@ public sealed class AgentConnectionLoop(
 
     public async Task RunAsync(CancellationToken ct)
     {
-        using var _ = new ProcessLock(AgentPaths.DefaultLockPath);
+        using var _lock = new ProcessLock(AgentPaths.DefaultLockPath);
 
         var cfg = await AgentConfigLoader.LoadAsync(configPath, ct);
         var baseUri = new Uri(cfg.ApiBaseUrl.TrimEnd('/') + "/");
@@ -44,6 +44,13 @@ public sealed class AgentConnectionLoop(
             _logger.LogError("No credentials at {Path}. Run 'mra enroll' first.", credentialPath);
             return;
         }
+
+        // Initialise the uploader with credentials (once — hub updated on each connect).
+        fileUploader.Initialize(baseUri, cred.AgentId, cred.ClientSecret);
+
+        // Start background workers. They run for the lifetime of the process.
+        _ = fileHasher.StartAsync(ct);
+        _ = fileUploader.StartAsync(ct);
 
         AgentApiClient api = null!;
         var version = Assembly.GetExecutingAssembly().GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
@@ -95,6 +102,25 @@ public sealed class AgentConnectionLoop(
                 {
                     Interlocked.Exchange(ref reconnectAttempts, 0);
                     _logger.LogInformation("SignalR reconnected (ConnectionId={Id}). Re-registering with server.", connectionId);
+
+                    // Update hub reference for background workers so they can report
+                    // again after the connection is restored.
+                    fileHasher.SetHub(hub!);
+                    fileUploader.SetHub(hub!);
+
+                    // Physical devices may have changed while we were disconnected —
+                    // rescan SCSI hosts before republishing so new/removed drives are detected.
+                    try
+                    {
+                        RemoveStaleScsiTapeDevices();
+                        scsiEnumerator.ScanScsiHosts();
+                        _logger.LogInformation("Post-reconnect SCSI scan completed.");
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Post-reconnect SCSI rescan failed.");
+                    }
+
                     for (var attempt = 1; attempt <= 5; attempt++)
                     {
                         try
@@ -103,10 +129,9 @@ public sealed class AgentConnectionLoop(
                             await ReportCacheStatusAsync(hub!, CancellationToken.None);
                             await reportPublisher.PublishFullDiscoveryAsync(hub!, CancellationToken.None);
                             await reportPublisher.PublishActiveOperationsAsync(hub!, CancellationToken.None);
-                            // Retry any preflight-identification reports that were lost when
-                            // the connection dropped. Runs after device discovery so the server
-                            // already knows the devices before receiving their tape results.
-                            await identificationReporter.RetryPendingAsync(hub!, CancellationToken.None);
+                            // Fire preflight for any tape that was loaded while we were offline —
+                            // we can't assume the same cartridge is still present.
+                            _ = TriggerReconnectPreflightAsync(hub!);
                             _logger.LogInformation("Re-registration completed after reconnect.");
                             return;
                         }
@@ -122,6 +147,8 @@ public sealed class AgentConnectionLoop(
                         }
                     }
                 };
+
+                // ── Hub handlers ───────────────────────────────────────────────
 
                 hub.On<AgentConfigCommand>("UpdateAgentConfig", async cmd =>
                 {
@@ -182,18 +209,22 @@ public sealed class AgentConnectionLoop(
                     }
                 });
 
-                hub.On<StartTapeReadCommand>("StartTapeRead", command =>
+                hub.On<StartTapeRunCommand>("StartTapeRun", command =>
                 {
-                    _logger.LogInformation("StartTapeRead received for device {DeviceId}.", command.TapeDeviceId);
-                    tapeReadRunner.Start(hub!, command);
+                    _logger.LogInformation(
+                        "StartTapeRun received: run {RunId} type={RunType} device {DeviceId}.",
+                        command.RunId, command.RunType, command.TapeDeviceId);
+                    tapeRunRunner.Start(hub!, command);
                     return Task.CompletedTask;
                 });
 
-                hub.On<StopTapeOperationCommand>("StopTapeOperation", command =>
+                hub.On<CancelTapeRunCommand>("CancelTapeRun", async command =>
                 {
-                    _logger.LogInformation("StopTapeOperation received for device {DeviceId}.", command.TapeDeviceId);
-                    stopHandler.RequestStop(command);
-                    return Task.CompletedTask;
+                    _logger.LogInformation("CancelTapeRun received for run {RunId}.", command.RunId);
+                    tapeRunRunner.RequestCancel(command.RunId);
+                    // Immediately report the updated operation snapshot so the API and UI
+                    // know the cancel was received even before the run terminates.
+                    await reportPublisher.PublishActiveOperationsAsync(hub!, CancellationToken.None);
                 });
 
                 hub.On<ExecuteTapeMediaActionCommand>("ExecuteTapeMediaAction", command =>
@@ -232,6 +263,11 @@ public sealed class AgentConnectionLoop(
 
                 await hub.StartAsync(ct);
                 failureBackoff = TimeSpan.FromSeconds(2);
+
+                // Wire hub reference into background workers immediately after connect.
+                fileHasher.SetHub(hub);
+                fileUploader.SetHub(hub);
+
                 _logger.LogInformation("Connected to MezzoRecovery (agent {AgentId}).", cred.AgentId);
                 await hub.InvokeAsync("RegisterRuntime", hostname, os, arch, version, ct);
                 await ReportCacheStatusAsync(hub, ct);
@@ -303,6 +339,30 @@ public sealed class AgentConnectionLoop(
         catch (Exception ex)
         {
             _logger.LogError(ex, "Post-startup SCSI rescan failed.");
+        }
+    }
+
+    private async Task TriggerReconnectPreflightAsync(HubConnection hub)
+    {
+        try
+        {
+            // Brief settling delay so PublishFullDiscoveryAsync store updates are visible.
+            await Task.Delay(TimeSpan.FromMilliseconds(500));
+            foreach (var device in deviceStore.Snapshot())
+            {
+                // Only devices with a tape loaded need preflight — we can't assume the
+                // same cartridge is present as before the disconnect.
+                if (device.MediaStatus is TapeMediaStatus.NoMedia or TapeMediaStatus.Unknown)
+                    continue;
+                // PublishDeviceStateRefreshAsync skips busy devices internally.
+                await reportPublisher.PublishDeviceStateRefreshAsync(
+                    hub, device.StableDeviceKey, CancellationToken.None, forcePreflight: true);
+            }
+            _logger.LogInformation("Post-reconnect preflight complete.");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Post-reconnect preflight trigger failed.");
         }
     }
 
@@ -409,7 +469,19 @@ public sealed class AgentConnectionLoop(
         try
         {
             Directory.CreateDirectory(path);
-            return (new DriveInfo(path).AvailableFreeSpace, null);
+            var fullPath = Path.GetFullPath(path);
+            var drive = DriveInfo.GetDrives()
+                .Where(d =>
+                {
+                    var name = d.Name.TrimEnd(Path.DirectorySeparatorChar);
+                    return fullPath.StartsWith(name + Path.DirectorySeparatorChar, StringComparison.Ordinal)
+                           || fullPath == name;
+                })
+                .OrderByDescending(d => d.Name.Length)
+                .FirstOrDefault();
+            return drive is not null
+                ? (drive.AvailableFreeSpace, null)
+                : (null, $"No mounted drive found for path: {fullPath}");
         }
         catch (Exception ex)
         {

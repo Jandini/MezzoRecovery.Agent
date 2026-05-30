@@ -21,7 +21,7 @@ public sealed class TapeMediaLoaderComputeTests
             activeOperationType: TapeOperationTypes.Read,
             lastPreflightAt: DateTimeOffset.UtcNow,
             preflightError: null,
-            lastDoorOpenAt: DateTimeOffset.UtcNow);
+            lastNoMediaAt: DateTimeOffset.UtcNow);
 
         Assert.Equal(TapeMediaStatus.NoMedia, status);
     }
@@ -35,7 +35,7 @@ public sealed class TapeMediaLoaderComputeTests
             activeOperationType: null,
             lastPreflightAt: null,
             preflightError: null,
-            lastDoorOpenAt: null);
+            lastNoMediaAt: null);
 
         Assert.Equal(TapeMediaStatus.NoMedia, status);
     }
@@ -49,7 +49,7 @@ public sealed class TapeMediaLoaderComputeTests
             activeOperationType: TapeOperationTypes.Preflight,
             lastPreflightAt: null,
             preflightError: null,
-            lastDoorOpenAt: null);
+            lastNoMediaAt: null);
 
         Assert.Equal(TapeMediaStatus.Identifying, status);
     }
@@ -67,7 +67,7 @@ public sealed class TapeMediaLoaderComputeTests
             activeOperationType: op,
             lastPreflightAt: DateTimeOffset.UtcNow,
             preflightError: null,
-            lastDoorOpenAt: null);
+            lastNoMediaAt: null);
 
         Assert.Equal(expected, status);
     }
@@ -81,7 +81,7 @@ public sealed class TapeMediaLoaderComputeTests
             activeOperationType: TapeOperationTypes.Read,
             lastPreflightAt: DateTimeOffset.UtcNow.AddMinutes(-5),
             preflightError: null,
-            lastDoorOpenAt: null);
+            lastNoMediaAt: null);
 
         Assert.Equal(TapeMediaStatus.Reading, status);
     }
@@ -98,7 +98,7 @@ public sealed class TapeMediaLoaderComputeTests
             lastPreflightAt: preflightAt,
             preflightError: null,
             detectedBlockBufferSizeBytes: 65536,
-            lastDoorOpenAt: null);
+            lastNoMediaAt: null);
 
         Assert.Equal(TapeMediaStatus.Ready, status);
     }
@@ -117,18 +117,18 @@ public sealed class TapeMediaLoaderComputeTests
             lastPreflightAt: preflightAt,
             preflightError: null,
             detectedBlockBufferSizeBytes: 0,
-            lastDoorOpenAt: null);
+            lastNoMediaAt: null);
 
         Assert.Equal(TapeMediaStatus.Empty, status);
     }
 
     [Fact]
-    public void Ready_drive_with_cleared_preflight_state_yields_Loaded()
+    public void Ready_drive_with_null_buffer_size_and_current_preflight_yields_Identifying()
     {
         var preflightAt = DateTimeOffset.UtcNow.AddMinutes(-1);
 
-        // After ClearPreflightResult stamps LastPreflightAt=UtcNow and sets buffer to null,
-        // the drive is known-present but not yet re-identified → Loaded.
+        // Ambiguous preflight result (null buffer, no error, no no-media since) — treated
+        // as needing re-identification → Identifying.
         var status = TapeMediaLoader.Compute(
             AgentTapeDeviceStatus.Ready,
             TapeGstatFlags.Online,
@@ -136,9 +136,9 @@ public sealed class TapeMediaLoaderComputeTests
             lastPreflightAt: preflightAt,
             preflightError: null,
             detectedBlockBufferSizeBytes: null,
-            lastDoorOpenAt: null);
+            lastNoMediaAt: null);
 
-        Assert.Equal(TapeMediaStatus.Loaded, status);
+        Assert.Equal(TapeMediaStatus.Identifying, status);
     }
 
     [Fact]
@@ -150,30 +150,32 @@ public sealed class TapeMediaLoaderComputeTests
             activeOperationType: null,
             lastPreflightAt: DateTimeOffset.UtcNow.AddMinutes(-1),
             preflightError: "buffer exhausted",
-            lastDoorOpenAt: null);
+            lastNoMediaAt: null);
 
         Assert.Equal(TapeMediaStatus.Error, status);
     }
 
     [Fact]
-    public void Door_open_after_preflight_marks_stale_history_and_returns_Loaded()
+    public void No_media_after_preflight_marks_stale_history_and_returns_Identifying()
     {
         var preflightAt = DateTimeOffset.UtcNow.AddMinutes(-5);
-        var doorOpenedAfter = preflightAt.AddMinutes(1);
+        var noMediaAfter = preflightAt.AddMinutes(1);
 
+        // no-media was observed after the last preflight → preflight history is stale
+        // (tape was absent) → Identifying (re-identification will be triggered).
         var status = TapeMediaLoader.Compute(
             AgentTapeDeviceStatus.Ready,
             TapeGstatFlags.Online,
             activeOperationType: null,
             lastPreflightAt: preflightAt,
             preflightError: null,
-            lastDoorOpenAt: doorOpenedAfter);
+            lastNoMediaAt: noMediaAfter);
 
-        Assert.Equal(TapeMediaStatus.Loaded, status);
+        Assert.Equal(TapeMediaStatus.Identifying, status);
     }
 
     [Fact]
-    public void Ready_drive_with_no_preflight_history_yields_Loaded()
+    public void Ready_drive_with_no_preflight_history_yields_Identifying()
     {
         var status = TapeMediaLoader.Compute(
             AgentTapeDeviceStatus.Ready,
@@ -181,9 +183,9 @@ public sealed class TapeMediaLoaderComputeTests
             activeOperationType: null,
             lastPreflightAt: null,
             preflightError: null,
-            lastDoorOpenAt: null);
+            lastNoMediaAt: null);
 
-        Assert.Equal(TapeMediaStatus.Loaded, status);
+        Assert.Equal(TapeMediaStatus.Identifying, status);
     }
 
     [Fact]
@@ -195,23 +197,26 @@ public sealed class TapeMediaLoaderComputeTests
             activeOperationType: null,
             lastPreflightAt: null,
             preflightError: null,
-            lastDoorOpenAt: null);
+            lastNoMediaAt: null);
 
         Assert.Equal(TapeMediaStatus.Unknown, status);
     }
 
     [Fact]
-    public void GMT_CLN_on_ready_drive_yields_CleaningRequired()
+    public void GMT_CLN_on_ready_drive_is_ignored_falls_through_to_preflight_history()
     {
+        // GMT_CLN (cleaning required) is unreliable on Linux — the flag is ignored.
+        // The state machine falls through to preflight history: current preflight with
+        // no error and no detected buffer size returns Identifying (preflight will re-run).
         var status = TapeMediaLoader.Compute(
             AgentTapeDeviceStatus.Ready,
             TapeGstatFlags.Online | TapeGstatFlags.CleaningRequested,
             activeOperationType: null,
             lastPreflightAt: DateTimeOffset.UtcNow.AddMinutes(-1),
             preflightError: null,
-            lastDoorOpenAt: null);
+            lastNoMediaAt: null);
 
-        Assert.Equal(TapeMediaStatus.CleaningRequired, status);
+        Assert.Equal(TapeMediaStatus.Identifying, status);
     }
 
     [Fact]
@@ -223,7 +228,7 @@ public sealed class TapeMediaLoaderComputeTests
             activeOperationType: TapeOperationTypes.Read,
             lastPreflightAt: null,
             preflightError: null,
-            lastDoorOpenAt: null);
+            lastNoMediaAt: null);
 
         Assert.Equal(TapeMediaStatus.Reading, status);
     }
@@ -239,7 +244,7 @@ public sealed class TapeMediaLoaderComputeTests
             activeOperationType: wrappingOp,
             lastPreflightAt: null,
             preflightError: null,
-            lastDoorOpenAt: null,
+            lastNoMediaAt: null,
             isRewindActive: true);
 
         Assert.Equal(TapeMediaStatus.Rewinding, status);
@@ -256,7 +261,7 @@ public sealed class TapeMediaLoaderComputeTests
             lastPreflightAt: DateTimeOffset.UtcNow,
             preflightError: null,
             detectedBlockBufferSizeBytes: 65536,
-            lastDoorOpenAt: null,
+            lastNoMediaAt: null,
             isRewindActive: true);
 
         Assert.Equal(TapeMediaStatus.Ready, status);
@@ -374,9 +379,10 @@ public sealed class TapeMediaLoaderObserveTests
 
         loader.Observe(hub: null!, store.GetByStableKey(device.StableDeviceKey)!, TapeGstatFlags.Online, AgentTapeDeviceStatus.Ready);
         var cleared = store.GetByStableKey(device.StableDeviceKey)!;
-        // ClearPreflightResult stamps LastPreflightAt=UtcNow (prevents auto-retrigger) and
-        // wipes PreflightError + detected sizes. Compute returns Loaded (null buffer sentinel).
-        Assert.Equal(TapeMediaStatus.Loaded, cleared.MediaStatus);
+        // ClearPreflightResult stamps LastPreflightAt=UtcNow and wipes detected sizes.
+        // No no-media was observed (loader is disabled so preflight did not run),
+        // so Compute sees a current-but-ambiguous preflight → Identifying.
+        Assert.Equal(TapeMediaStatus.Identifying, cleared.MediaStatus);
         Assert.NotNull(cleared.LastPreflightAt);
         Assert.Null(cleared.PreflightError);
         Assert.Null(cleared.DetectedBlockSizeBytes);
@@ -395,6 +401,44 @@ public sealed class TapeMediaLoaderObserveTests
         loader.Observe(hub: null!, fresh, TapeGstatFlags.DoorOpen, AgentTapeDeviceStatus.NoMedia);
         loader.Observe(hub: null!, fresh, TapeGstatFlags.Online, AgentTapeDeviceStatus.Ready);
 
+        Assert.Single(trigger.StartedFor);
+    }
+
+    [Fact]
+    public void Transport_operation_without_no_media_does_not_retrigger_preflight()
+    {
+        // After a rewind or fast-forward, no no-media is observed — the tape never left
+        // the drive. Preflight must NOT re-trigger even though the tape position changed.
+        var (loader, trigger, store, _) = BuildLoader();
+        var device = BuildDevice();
+        store.ReplaceAll([device]);
+        store.UpdatePreflightResult(device.StableDeviceKey, 32768, 65536, null, DateTimeOffset.UtcNow.AddMinutes(-2));
+
+        // Simulate status-poller ticks after a rewind: drive stays Ready, no no-media.
+        var fresh = store.GetByStableKey(device.StableDeviceKey)!;
+        loader.Observe(hub: null!, fresh, TapeGstatFlags.Online, AgentTapeDeviceStatus.Ready);
+        loader.Observe(hub: null!, fresh, TapeGstatFlags.Online, AgentTapeDeviceStatus.Ready);
+        loader.Observe(hub: null!, fresh, TapeGstatFlags.Online, AgentTapeDeviceStatus.Ready);
+
+        Assert.Empty(trigger.StartedFor);
+    }
+
+    [Fact]
+    public void NoMedia_drive_status_without_DoorOpen_flag_still_records_no_media_and_retriggers()
+    {
+        // Linux drives that don't set DR_OPEN still report NoMedia via drive status.
+        // The loader must track this and trigger preflight when the drive returns to Ready.
+        var (loader, trigger, store, _) = BuildLoader();
+        var device = BuildDevice();
+        store.ReplaceAll([device]);
+        store.UpdatePreflightResult(device.StableDeviceKey, 32768, 65536, null, DateTimeOffset.UtcNow.AddMinutes(-10));
+
+        var fresh = store.GetByStableKey(device.StableDeviceKey)!;
+        // NoMedia without DR_OPEN flag (drive status only).
+        loader.Observe(hub: null!, fresh, flags: null, AgentTapeDeviceStatus.NoMedia);
+        Assert.Empty(trigger.StartedFor);
+
+        loader.Observe(hub: null!, fresh, TapeGstatFlags.Online, AgentTapeDeviceStatus.Ready);
         Assert.Single(trigger.StartedFor);
     }
 
@@ -509,9 +553,9 @@ public sealed class TapeMediaLoaderObserveTests
         var device = BuildDevice();
         store.ReplaceAll([device]);
 
-        // First sighting → Loaded (preflight history is empty until the runner finishes)
+        // First sighting → Identifying (preflight triggered on this tick)
         loader.Observe(hub: null!, store.GetByStableKey(device.StableDeviceKey)!, TapeGstatFlags.Online, AgentTapeDeviceStatus.Ready);
-        Assert.Equal(TapeMediaStatus.Loaded, store.GetByStableKey(device.StableDeviceKey)!.MediaStatus);
+        Assert.Equal(TapeMediaStatus.Identifying, store.GetByStableKey(device.StableDeviceKey)!.MediaStatus);
 
         // Door open → NoMedia
         loader.Observe(hub: null!, store.GetByStableKey(device.StableDeviceKey)!, TapeGstatFlags.DoorOpen, AgentTapeDeviceStatus.NoMedia);
@@ -519,20 +563,20 @@ public sealed class TapeMediaLoaderObserveTests
     }
 
     [Fact]
-    public void ForgetDevice_drops_door_open_tracker()
+    public void ForgetDevice_drops_no_media_tracker()
     {
         var (loader, trigger, store, _) = BuildLoader();
         var device = BuildDevice();
         store.ReplaceAll([device]);
         store.UpdatePreflightResult(device.StableDeviceKey, 32768, 65536, null, DateTimeOffset.UtcNow);
 
-        // Door open recorded.
+        // No-media recorded (door open implies no media).
         loader.Observe(hub: null!, store.GetByStableKey(device.StableDeviceKey)!, TapeGstatFlags.DoorOpen, AgentTapeDeviceStatus.NoMedia);
-        // Forget — tracker is reset.
+        // Forget — no-media tracker is cleared.
         loader.ForgetDevice(device.StableDeviceKey);
 
-        // Now Ready should not trigger preflight because LastDoorOpenAt is gone and
-        // LastPreflightAt is still present from the prior successful preflight.
+        // Ready after forget: no no-media in tracker and LastPreflightAt is present
+        // from the prior successful preflight → preflight should NOT re-trigger.
         loader.Observe(hub: null!, store.GetByStableKey(device.StableDeviceKey)!, TapeGstatFlags.Online, AgentTapeDeviceStatus.Ready);
 
         Assert.Empty(trigger.StartedFor);

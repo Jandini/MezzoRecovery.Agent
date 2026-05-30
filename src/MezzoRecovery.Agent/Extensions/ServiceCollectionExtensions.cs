@@ -24,7 +24,6 @@ internal static class ServiceCollectionExtensions
             .AddTransient<EnrollCommandHandler>()
             .AddTransient<RestartCommandHandler>()
             .AddTransient<RunCommandHandler>()
-
             .AddTransient<StatusCommandHandler>()
             .AddTransient<UpdateCommandHandler>()
             .AddTransient<VersionCommandHandler>()
@@ -40,8 +39,8 @@ internal static class ServiceCollectionExtensions
             .AddSingleton<IScsiTapeDeviceManager, SysfsScsiTapeDeviceManager>()
             .AddSingleton<TapeDeviceLockManager>()
             .AddSingleton<TapeOperationStateStore>()
-            .AddSingleton<TapeOperationReporter>()
             .AddSingleton<ITapeVerifyService, TapeVerifyService>()
+            .AddSingleton<ITapeCloneService, TapeCloneService>()
             .AddSingleton<IPreflightService, PreflightService>()
             .AddSingleton<AgentDeviceStateStore>()
             .AddSingleton<TapeDeviceDiscoveryService>()
@@ -51,7 +50,9 @@ internal static class ServiceCollectionExtensions
             .AddSingleton<TapeMediaLoader>()
             .AddSingleton<DeviceReportPublisher>()
             .AddSingleton<TapeDeviceStatusPoller>()
-            .AddSingleton<TapeReadRunner>()
+            .AddSingleton<TapeFileUploader>()
+            .AddSingleton<TapeFileHasher>()
+            .AddSingleton<TapeRunRunner>()
             .AddSingleton<TapeMediaControlService>()
             .AddSingleton<StopOperationHandler>();
 }

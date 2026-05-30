@@ -126,6 +126,8 @@ internal sealed partial class UpdateCommandHandler(ILoggerFactory loggerFactory)
                 File.Move(tmpLink, SymlinkPath, overwrite: true);
             }
 
+            var installedVersion = TryGetInstalledVersion(installPath);
+
             // If no service unit exists at all, write mra.service now.
             // This repairs installations where the service was never created,
             // or migrates from a legacy service name.
@@ -141,14 +143,15 @@ internal sealed partial class UpdateCommandHandler(ILoggerFactory loggerFactory)
             if (!noRestart)
             {
                 RunSystemctl("start", activeService, logger);
-                logger.LogInformation("mra updated and service {Service} started.", activeService);
+                logger.LogInformation("mra updated to {Version}, service {Service} started.",
+                    installedVersion ?? "unknown version", activeService);
             }
             else
             {
-                logger.LogInformation("mra updated. Service not restarted (--no-restart).");
+                logger.LogInformation("mra updated to {Version}. Service not restarted (--no-restart).",
+                    installedVersion ?? "unknown version");
             }
 
-            Console.WriteLine("Update complete.");
             return 0;
         }
         catch (HttpRequestException ex)
@@ -237,6 +240,27 @@ internal sealed partial class UpdateCommandHandler(ILoggerFactory loggerFactory)
         }
     }
 
+    private static string? TryGetInstalledVersion(string binaryPath)
+    {
+        try
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo(binaryPath, "--version")
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+            };
+            using var proc = System.Diagnostics.Process.Start(psi);
+            var output = proc?.StandardOutput.ReadLine()?.Trim();
+            proc?.WaitForExit(5_000);
+            return string.IsNullOrWhiteSpace(output) ? null : output;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     private static async Task<string> ComputeSha256Async(string path, CancellationToken ct)
     {
         using var sha = System.Security.Cryptography.SHA256.Create();
@@ -278,10 +302,10 @@ internal sealed partial class UpdateCommandHandler(ILoggerFactory loggerFactory)
             {
                 if (minor >= legacyMinorThreshold)
                 {
-                    logger.LogInformation("glibc minor version {Minor} - using standard binary.", minor);
+                    logger.LogInformation("Installing standard binary (glibc 2.{Minor}).", minor);
                     return $"{BinaryName}-{rid}";
                 }
-                logger.LogInformation("glibc minor version {Minor} (< {Threshold}) - using legacy binary.", minor, legacyMinorThreshold);
+                logger.LogInformation("Installing legacy binary (glibc 2.{Minor}).", minor);
                 return $"{BinaryName}-{rid}-legacy";
             }
         }

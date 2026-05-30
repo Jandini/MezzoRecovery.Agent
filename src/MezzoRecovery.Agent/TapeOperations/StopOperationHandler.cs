@@ -1,27 +1,26 @@
-using MezzoRecovery.Agent.Contracts;
 using Microsoft.Extensions.Logging;
 
 namespace MezzoRecovery.Agent.TapeOperations;
 
 /// <summary>
-/// Maps a StopTapeOperation command to a cooperative cancel on the current operation
-/// for that device. The runner observes the cancellation and emits Cancelled itself.
+/// Cooperative cancel for the current operation on a given device.
+/// The runner observes the cancellation and emits Cancelled itself.
 /// </summary>
 public sealed class StopOperationHandler(
     TapeOperationStateStore state,
     ILogger<StopOperationHandler> logger)
 {
-    public void RequestStop(StopTapeOperationCommand command)
+    public void RequestStop(Guid deviceId)
     {
-        if (state.RequestStop(command.TapeDeviceId))
+        if (state.RequestStop(deviceId))
         {
-            logger.LogInformation("Stop requested for device {DeviceId}.", command.TapeDeviceId);
+            logger.LogInformation("Stop requested for device {DeviceId}.", deviceId);
         }
         else
         {
             logger.LogInformation(
                 "Stop ignored for device {DeviceId}: no operation in progress.",
-                command.TapeDeviceId);
+                deviceId);
         }
     }
 }

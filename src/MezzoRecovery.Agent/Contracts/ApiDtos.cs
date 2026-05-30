@@ -33,7 +33,6 @@ public enum AgentTapeDeviceStatus
     Unavailable = 6,
     Error = 7,
     Removed = 8,
-    CleaningRequired = 10,
 }
 
 /// <summary>
@@ -42,25 +41,23 @@ public enum AgentTapeDeviceStatus
 /// </summary>
 public enum TapeMediaStatus
 {
-    Unknown = 0,
-    NoMedia = 1,
-    Loaded = 2,
-    Identifying = 3,
-    Ready = 4,
-    Error = 5,
-    Reading = 6,
+    Unknown        = 0,
+    NoMedia        = 1,
+    Identifying    = 3,
+    Ready          = 4,
+    Error          = 5,
+    Reading        = 6,
     FastForwarding = 7,
-    Rewinding = 8,
-    Ejecting = 9,
-    CleaningRequired = 10,
-    Empty = 11,
+    Rewinding      = 8,
+    Ejecting       = 9,
+    Empty          = 10,
 }
 
 public static class TapeMediaStatusExtensions
 {
-    // True while the cartridge is mid-motion. Used as a pre-flight gate so the
-    // agent rejects a new operation when the hardware is already doing something
-    // (e.g. the operator pressed the physical eject button on the drive).
+    // True while the cartridge is mid-motion or being identified.
+    // Used as a pre-flight gate so the agent rejects a new operation when the
+    // hardware is already doing something.
     public static bool IsBusy(this TapeMediaStatus status) => status is
         TapeMediaStatus.Identifying
         or TapeMediaStatus.Reading
@@ -171,24 +168,37 @@ public sealed class AgentTapePreflightResultDto
 [JsonSerializable(typeof(AgentTapeDeviceDto))]
 [JsonSerializable(typeof(AgentTapeDeviceDto[]))]
 [JsonSerializable(typeof(TapeMediaStatus))]
-[JsonSerializable(typeof(StartTapeReadCommand))]
-[JsonSerializable(typeof(StopTapeOperationCommand))]
+[JsonSerializable(typeof(AgentTapePreflightResultDto))]
+[JsonSerializable(typeof(byte[][]))]
+// ── Commands received from server ─────────────────────────────────────────────
+[JsonSerializable(typeof(StartTapeRunCommand))]
+[JsonSerializable(typeof(CancelTapeRunCommand))]
 [JsonSerializable(typeof(ExecuteTapeMediaActionCommand))]
 [JsonSerializable(typeof(AgentConfigCommand))]
 [JsonSerializable(typeof(RefreshTapeDeviceCommand))]
 [JsonSerializable(typeof(UpdateTapeDeviceReadSettingsCommand))]
-[JsonSerializable(typeof(TapeOperationStartedMessage))]
-[JsonSerializable(typeof(TapeOperationProgressMessage))]
-[JsonSerializable(typeof(TapeOperationCompletedMessage))]
-[JsonSerializable(typeof(TapeOperationFailedMessage))]
-[JsonSerializable(typeof(TapeOperationCancelledMessage))]
+// ── Device reporting ──────────────────────────────────────────────────────────
+[JsonSerializable(typeof(TapeDeviceWireDto))]
+[JsonSerializable(typeof(TapeDeviceWireDto[]))]
+// ── Active operation snapshot ─────────────────────────────────────────────────
 [JsonSerializable(typeof(ActiveOperationSnapshot))]
 [JsonSerializable(typeof(ActiveOperationSnapshot[]))]
-[JsonSerializable(typeof(ReportTapeSegmentCreatedMessage))]
-[JsonSerializable(typeof(ReportTapeSegmentReadProgressMessage))]
-[JsonSerializable(typeof(ReportTapeSegmentReadCompletedMessage))]
-[JsonSerializable(typeof(ReportTapeSegmentReadFailedMessage))]
-[JsonSerializable(typeof(ReportTapeSegmentReadAbortedMessage))]
-[JsonSerializable(typeof(AgentTapePreflightResultDto))]
-[JsonSerializable(typeof(byte[][]))]
+// ── Media detection ───────────────────────────────────────────────────────────
+[JsonSerializable(typeof(MediaDetectionReport))]
+// ── Run lifecycle ─────────────────────────────────────────────────────────────
+[JsonSerializable(typeof(TapeRunProgressReport))]
+[JsonSerializable(typeof(TapeRunCompletedReport))]
+// ── Operation lifecycle ───────────────────────────────────────────────────────
+[JsonSerializable(typeof(TapeOperationStartedReport))]
+[JsonSerializable(typeof(TapeOperationProgressReport))]
+[JsonSerializable(typeof(TapeOperationCompletedReport))]
+[JsonSerializable(typeof(TapeOperationEventReport))]
+// ── File lifecycle ────────────────────────────────────────────────────────────
+[JsonSerializable(typeof(TapeFileCreatedReport))]
+[JsonSerializable(typeof(TapeFileReadProgressReport))]
+[JsonSerializable(typeof(TapeFileReadCompletedReport))]
+[JsonSerializable(typeof(TapeFileHashProgressReport))]
+[JsonSerializable(typeof(TapeFileHashCompletedReport))]
+[JsonSerializable(typeof(TapeFileUploadProgressReport))]
+[JsonSerializable(typeof(TapeFileUploadFailedReport))]
 internal partial class AgentJsonContext : JsonSerializerContext;

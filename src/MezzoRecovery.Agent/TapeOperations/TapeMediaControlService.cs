@@ -7,15 +7,16 @@ using Microsoft.Extensions.Logging;
 namespace MezzoRecovery.Agent.TapeOperations;
 
 /// <summary>
-/// Synchronous media operations (rewind, eject, space). Each runs under the per-device lock
-/// and reports a single terminal message -- no progress ticks.
+/// Synchronous media operations (Rewind, Eject, Space). Each runs under the per-device lock.
+/// These operations are device-level utilities and do not report to the new tape-run pipeline.
+/// Results are logged locally and reflected in the device status refresh at the end.
 /// </summary>
 public sealed class TapeMediaControlService(
     TapeDeviceLockManager locks,
     TapeOperationStateStore state,
-    TapeOperationReporter reporter,
     AgentDeviceStateStore deviceStore,
     DeviceReportPublisher publisher,
+    TapeMediaLoader mediaLoader,
     ILogger<TapeMediaControlService> logger)
 {
     public void Execute(HubConnection hub, ExecuteTapeMediaActionCommand command) =>
@@ -23,54 +24,73 @@ public sealed class TapeMediaControlService(
 
     private async Task RunAsync(HubConnection hub, ExecuteTapeMediaActionCommand command)
     {
+        logger.LogInformation(
+            "ExecuteTapeMediaAction {Action}: RunAsync started for device {DeviceId}.",
+            command.OperationType, command.TapeDeviceId);
+
         if (string.IsNullOrWhiteSpace(command.NonRewindingDevicePath))
         {
-            await reporter.FailedAsync(hub, BuildFailed(command, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow,
-                "InvalidPath", "Non-rewinding device path is required."), CancellationToken.None);
+            logger.LogWarning(
+                "ExecuteTapeMediaAction {Action}: non-rewinding device path is required.",
+                command.OperationType);
             return;
         }
 
+        // State-store guard: blocks concurrent ops tracked by the agent.
         if (state.Get(command.TapeDeviceId) is not null)
         {
-            var now = DateTimeOffset.UtcNow;
-            await reporter.FailedAsync(hub, BuildFailed(command, now, now, "DeviceBusy",
-                "Device already has an operation in progress."), CancellationToken.None);
+            logger.LogWarning(
+                "ExecuteTapeMediaAction {Action}: device {DeviceId} already busy (state store).",
+                command.OperationType, command.TapeDeviceId);
             return;
         }
 
-        // Hardware pre-flight: re-probe the drive *now* rather than trusting the cached
-        // sweep. The cache may be many seconds stale, and acting on a stale "Ready" for a
-        // drive whose cartridge was just pulled means OpenRead blocks long enough for the
-        // UI to sit on "Ejecting · 00:28" before erroring with "No medium found". The
-        // refresh path also pushes the corrected card back to the UX so the operator sees
-        // the real state regardless of what we decide here.
-        await publisher.PublishDeviceStateRefreshAsync(hub, command.StableDeviceKey, CancellationToken.None);
-
-        var snapshot = deviceStore.GetByStableKey(command.StableDeviceKey);
-        if (snapshot is not null)
+        // Cache-based guard: avoids sending commands to a physically absent or busy tape
+        // without the latency of an MTIOCGET ioctl. Hardware errors (drive actually busy,
+        // no media) are caught in the try block below.
+        var cacheSnapshot = deviceStore.GetByStableKey(command.StableDeviceKey);
+        if (cacheSnapshot is not null)
         {
-            if (snapshot.Status == AgentTapeDeviceStatus.Busy || snapshot.MediaStatus.IsBusy())
+            if (cacheSnapshot.Status == AgentTapeDeviceStatus.Busy || cacheSnapshot.MediaStatus.IsBusy())
             {
-                var now = DateTimeOffset.UtcNow;
-                await reporter.FailedAsync(hub, BuildFailed(command, now, now, "DeviceBusy",
-                    "Device is busy with another operation."), CancellationToken.None);
+                logger.LogWarning(
+                    "ExecuteTapeMediaAction {Action}: device {DeviceId} busy per cached state; rejecting.",
+                    command.OperationType, command.TapeDeviceId);
                 return;
             }
-
-            // Every media op (Eject, Rewind, Space) needs a cartridge present. Eject was
-            // previously allowed through as a "harmless door unlock", but in practice
-            // OpenRead blocks for tens of seconds on an empty drive before failing.
-            if (snapshot.Status == AgentTapeDeviceStatus.NoMedia
-                || snapshot.MediaStatus == TapeMediaStatus.NoMedia)
+            if (cacheSnapshot.Status == AgentTapeDeviceStatus.NoMedia
+                || cacheSnapshot.MediaStatus == TapeMediaStatus.NoMedia)
             {
-                var now = DateTimeOffset.UtcNow;
-                await reporter.FailedAsync(hub, BuildFailed(command, now, now, "NoMedia",
-                    "No tape media loaded."), CancellationToken.None);
+                logger.LogWarning(
+                    "ExecuteTapeMediaAction {Action}: no media on device {DeviceId} per cached state; rejecting.",
+                    command.OperationType, command.TapeDeviceId);
                 return;
             }
         }
 
+        // Immediately surface the in-motion state before acquiring the lock so the UI
+        // responds without waiting for lock acquisition or tape hardware latency.
+        var pendingMediaStatus = command.OperationType switch
+        {
+            TapeOperationTypes.Rewind => TapeMediaStatus.Rewinding,
+            TapeOperationTypes.Space  => TapeMediaStatus.FastForwarding,
+            TapeOperationTypes.Eject  => TapeMediaStatus.Ejecting,
+            _                          => TapeMediaStatus.Unknown,
+        };
+        deviceStore.UpdateMediaStatus(command.StableDeviceKey, pendingMediaStatus);
+        deviceStore.UpdateStatus(command.StableDeviceKey, AgentTapeDeviceStatus.Busy, "PENDING");
+        await publisher.PublishCurrentAsync(hub, CancellationToken.None);
+        logger.LogInformation(
+            "ExecuteTapeMediaAction {Action}: published Busy+{MediaStatus} for device {DeviceId}.",
+            command.OperationType, pendingMediaStatus, command.TapeDeviceId);
+
+        logger.LogInformation(
+            "ExecuteTapeMediaAction {Action}: acquiring lock for device {DeviceId}.",
+            command.OperationType, command.TapeDeviceId);
         using var deviceLock = await locks.AcquireAsync(command.StableDeviceKey, CancellationToken.None);
+        logger.LogInformation(
+            "ExecuteTapeMediaAction {Action}: lock acquired for device {DeviceId}.",
+            command.OperationType, command.TapeDeviceId);
 
         var startedAt = DateTimeOffset.UtcNow;
         var cts = new CancellationTokenSource();
@@ -86,108 +106,78 @@ public sealed class TapeMediaControlService(
 
         if (!state.TryRegister(op))
         {
-            await reporter.FailedAsync(hub, BuildFailed(command, startedAt, DateTimeOffset.UtcNow,
-                "DeviceBusy", "Race: another operation registered first."), CancellationToken.None);
+            logger.LogWarning(
+                "ExecuteTapeMediaAction {Action}: race — another op registered first.",
+                command.OperationType);
+            // Correct the pending Busy state we published; fire-and-forget is fine here
+            // since the race winner will publish its own state imminently.
+            _ = publisher.PublishDeviceStateRefreshAsync(hub, command.StableDeviceKey, CancellationToken.None);
             return;
         }
 
-        if (deviceStore.UpdateStatus(command.StableDeviceKey, AgentTapeDeviceStatus.Busy, "BUSY"))
-            await publisher.PublishCurrentAsync(hub, CancellationToken.None);
+        // Confirm MediaStatus via Observe now that the op is registered in the state store,
+        // so the published value is backed by the canonical active-op derivation path.
+        var prePublish = deviceStore.GetByStableKey(command.StableDeviceKey);
+        if (prePublish is not null)
+            mediaLoader.Observe(hub, prePublish, flags: null, AgentTapeDeviceStatus.Busy);
+
+        deviceStore.UpdateStatus(command.StableDeviceKey, AgentTapeDeviceStatus.Busy, "BUSY");
+        await publisher.PublishCurrentAsync(hub, CancellationToken.None);
 
         try
         {
-            await reporter.StartedAsync(
-                hub,
-                new TapeOperationStartedMessage(
-                    command.TapeDeviceId,
-                    command.OperationType,
-                    command.RequestedByUserId,
-                    startedAt,
-                    BlockSizeBytes: 0,
-                    BufferSizeBytes: 0),
-                CancellationToken.None);
-
+            logger.LogInformation(
+                "ExecuteTapeMediaAction {Action}: opening tape session on {Path}.",
+                command.OperationType, command.NonRewindingDevicePath);
             await using var tape = LinuxTapeSession.OpenRead(command.NonRewindingDevicePath);
-            var navigator = tape.Navigator;
+
+            logger.LogInformation(
+                "ExecuteTapeMediaAction {Action}: executing tape command on device {DeviceId}.",
+                command.OperationType, command.TapeDeviceId);
             var ok = command.OperationType switch
             {
-                TapeOperationTypes.Rewind => navigator.TryRewind(out _),
-                TapeOperationTypes.Eject => navigator.TryEject(out _),
-                TapeOperationTypes.Space => navigator.TrySpaceFilemarksForward(
+                TapeOperationTypes.Rewind => tape.Navigator.TryRewind(out _),
+                TapeOperationTypes.Eject  => tape.Navigator.TryEject(out _),
+                TapeOperationTypes.Space  => tape.Navigator.TrySpaceFilemarksForward(
                     Math.Max(1, command.SpaceCount ?? 1), out _),
                 _ => false,
             };
 
-            var completedAt = DateTimeOffset.UtcNow;
-            if (!ok)
-            {
-                await reporter.FailedAsync(hub, BuildFailed(command, startedAt, completedAt,
-                    "DeviceError", $"Media action {command.OperationType} failed."), CancellationToken.None);
-                return;
-            }
-
-            deviceStore.ClearPreflightResult(command.StableDeviceKey);
-
-            await reporter.CompletedAsync(
-                hub,
-                new TapeOperationCompletedMessage(
-                    command.TapeDeviceId,
-                    command.OperationType,
-                    command.RequestedByUserId,
-                    startedAt,
-                    completedAt,
-                    BytesRead: 0,
-                    BlocksRead: 0,
-                    FilemarksRead: 0,
-                    ThroughputMbps: 0,
-                    ElapsedSeconds: (long)(completedAt - startedAt).TotalSeconds,
-                    BlockSizeBytes: 0,
-                    BufferSizeBytes: 0),
-                CancellationToken.None);
+            if (ok)
+                logger.LogInformation(
+                    "ExecuteTapeMediaAction {Action}: tape command succeeded on device {DeviceId}.",
+                    command.OperationType, command.TapeDeviceId);
+            else
+                logger.LogWarning(
+                    "ExecuteTapeMediaAction {Action}: tape command failed on device {DeviceId}.",
+                    command.OperationType, command.TapeDeviceId);
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, "Media action {Action} on device {DeviceId} failed.",
+            logger.LogError(ex,
+                "ExecuteTapeMediaAction {Action}: tape command threw on device {DeviceId}.",
                 command.OperationType, command.TapeDeviceId);
-            await reporter.FailedAsync(hub, BuildFailed(command, startedAt, DateTimeOffset.UtcNow,
-                "DeviceError", ex.Message), CancellationToken.None);
         }
         finally
         {
+            logger.LogInformation(
+                "ExecuteTapeMediaAction {Action}: cleaning up for device {DeviceId}.",
+                command.OperationType, command.TapeDeviceId);
             state.Remove(command.TapeDeviceId);
             cts.Dispose();
 
             try
             {
-                await publisher.PublishActiveOperationsAsync(hub, CancellationToken.None);
-                await publisher.PublishFullDiscoveryAsync(hub, CancellationToken.None);
+                // Probe and publish just this device immediately so the UX updates
+                // without waiting for the next scheduled full discovery sweep.
+                await publisher.PublishDeviceStateRefreshAsync(hub, command.StableDeviceKey, CancellationToken.None);
             }
             catch (Exception ex)
             {
-                logger.LogWarning(ex, "Post-operation device report failed for device {DeviceId}.", command.TapeDeviceId);
+                logger.LogWarning(ex,
+                    "ExecuteTapeMediaAction {Action}: post-op device report failed for device {DeviceId}.",
+                    command.OperationType, command.TapeDeviceId);
             }
         }
     }
-
-    private static TapeOperationFailedMessage BuildFailed(
-        ExecuteTapeMediaActionCommand command,
-        DateTimeOffset startedAt,
-        DateTimeOffset failedAt,
-        string reason,
-        string? message) =>
-        new(
-            command.TapeDeviceId,
-            command.OperationType,
-            command.RequestedByUserId,
-            startedAt,
-            failedAt,
-            reason,
-            message,
-            BytesRead: 0,
-            BlocksRead: 0,
-            FilemarksRead: 0,
-            ThroughputMbps: 0,
-            ElapsedSeconds: 0,
-            BlockSizeBytes: 0,
-            BufferSizeBytes: 0);
 }

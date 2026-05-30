@@ -1,4 +1,5 @@
 using MezzoRecovery.Agent.Configuration;
+using MezzoRecovery.Agent.Contracts;
 using MezzoRecovery.Agent.TapeOperations;
 using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.Extensions.Logging;
@@ -46,7 +47,7 @@ public sealed class DeviceReportPublisher(
 
             // Re-snapshot in case Observe mutated MediaStatus.
             var publish = store.Snapshot();
-            await hub.InvokeAsync("ReportTapeDevices", publish.ToArray(), ct);
+            await hub.InvokeAsync("ReportTapeDevices", publish.Select(MapToWire).ToArray(), ct);
             logger.LogInformation("Reported {Count} tape device(s) (full discovery).", publish.Count);
         }
         catch (Exception ex)
@@ -74,7 +75,7 @@ public sealed class DeviceReportPublisher(
 
         try
         {
-            await hub.InvokeAsync("ReportTapeDevices", snapshot.ToArray(), ct);
+            await hub.InvokeAsync("ReportTapeDevices", snapshot.Select(MapToWire).ToArray(), ct);
         }
         catch (Exception ex)
         {
@@ -137,4 +138,66 @@ public sealed class DeviceReportPublisher(
 
         await PublishActiveOperationsAsync(hub, ct);
     }
+
+    /// <summary>
+    /// Maps the agent's internal device DTO to the wire DTO that the server's
+    /// AgentHub.ReportTapeDevices method expects. Agent-side status enums are richer
+    /// than the domain model; this method normalises them to the values the server
+    /// can parse and persist.
+    /// <para>
+    /// Exposed as <c>internal static</c> so <c>TapePreflightRunner</c> can reuse it
+    /// without taking a constructor dependency on <c>DeviceReportPublisher</c> (which
+    /// would close the DI cycle runner → publisher → loader → trigger → runner).
+    /// </para>
+    /// </summary>
+    internal static TapeDeviceWireDto MapToWire(AgentTapeDeviceDto d) => new(
+        StableDeviceKey:         d.StableDeviceKey,
+        LinuxDevicePath:         d.LinuxDevicePath,
+        NonRewindingDevicePath:  d.NonRewindingDevicePath,
+        RewindingDevicePath:     d.RewindingDevicePath,
+        Vendor:                  d.Vendor,
+        Model:                   d.Model,
+        Revision:                d.Revision,
+        SerialNumber:            d.SerialNumber,
+        SysfsPath:               d.SysfsPath,
+        ScsiAddress:             d.ScsiAddress,
+        MtStatusLabels:          d.MtStatusLabels,
+        IsPresent:               d.IsPresent,
+        IsAccessible:            d.IsAccessible,
+        ReadBlockSizeBytes:      d.ReadBlockSizeBytes,
+        ReadBufferSizeBytes:     d.ReadBufferSizeBytes,
+        DeviceStatus:            MapDeviceStatusToWire(d.Status),
+        MediaStatus:             MapMediaStatusToWire(d.MediaStatus));
+
+    // Normalises agent device status to domain-supported values.
+    // No-tape is modelled as Ready + MediaStatus.NoMedia; Unavailable maps to Error.
+    internal static string MapDeviceStatusToWire(AgentTapeDeviceStatus s) => s switch
+    {
+        AgentTapeDeviceStatus.Present          => "Ready",
+        AgentTapeDeviceStatus.Ready            => "Ready",
+        AgentTapeDeviceStatus.NoMedia          => "Ready",
+        AgentTapeDeviceStatus.Busy             => "Busy",
+        AgentTapeDeviceStatus.PermissionDenied => "PermissionDenied",
+        AgentTapeDeviceStatus.Unavailable      => "Error",
+        AgentTapeDeviceStatus.Error            => "Error",
+        AgentTapeDeviceStatus.Removed          => "Removed",
+        _                                      => "Unknown",
+    };
+
+    // Maps agent media status to the domain-supported wire values.
+    // Operation states (Identifying, Reading, etc.) are passed through so the API
+    // can store and broadcast the full cartridge lifecycle to the UI.
+    internal static string MapMediaStatusToWire(TapeMediaStatus s) => s switch
+    {
+        TapeMediaStatus.NoMedia        => "NoMedia",
+        TapeMediaStatus.Identifying    => "Identifying",
+        TapeMediaStatus.Ready          => "Ready",
+        TapeMediaStatus.Error          => "Error",
+        TapeMediaStatus.Reading        => "Reading",
+        TapeMediaStatus.FastForwarding => "FastForwarding",
+        TapeMediaStatus.Rewinding      => "Rewinding",
+        TapeMediaStatus.Ejecting       => "Ejecting",
+        TapeMediaStatus.Empty          => "Empty",
+        _                              => "Unknown",
+    };
 }

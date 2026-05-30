@@ -48,7 +48,13 @@ public sealed class TapeFileUploader(ILogger<TapeFileUploader> logger)
 
     public void SetHub(HubConnection hub) => _hub = hub;
 
-    public void Enqueue(WorkItem item) => _queue.Writer.TryWrite(item);
+    public void Enqueue(WorkItem item)
+    {
+        logger.LogInformation(
+            "Upload enqueued for file {FileId} (run {RunId}, {Bytes} bytes, path {FilePath}).",
+            item.FileId, item.RunId, item.FileSizeBytes, item.FilePath);
+        _queue.Writer.TryWrite(item);
+    }
 
     /// <summary>
     /// Starts the background consumer. Called once from the DI-composed run loop.
@@ -61,6 +67,9 @@ public sealed class TapeFileUploader(ILogger<TapeFileUploader> logger)
     {
         await foreach (var item in _queue.Reader.ReadAllAsync(ct))
         {
+            logger.LogInformation(
+                "Upload dequeued for file {FileId} (run {RunId}).",
+                item.FileId, item.RunId);
             await UploadWithRetryAsync(item, ct);
         }
     }

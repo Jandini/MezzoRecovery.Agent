@@ -129,6 +129,7 @@ public sealed class AgentConnectionLoop(
                             await ReportCacheStatusAsync(hub!, CancellationToken.None);
                             await reportPublisher.PublishFullDiscoveryAsync(hub!, CancellationToken.None);
                             await reportPublisher.PublishActiveOperationsAsync(hub!, CancellationToken.None);
+                            await ResumePendingUploadsAsync(baseUri, cred, CancellationToken.None);
                             // Fire preflight for any tape that was loaded while we were offline —
                             // we can't assume the same cartridge is still present.
                             _ = TriggerReconnectPreflightAsync(hub!);
@@ -273,6 +274,7 @@ public sealed class AgentConnectionLoop(
                 await ReportCacheStatusAsync(hub, ct);
                 await reportPublisher.PublishFullDiscoveryAsync(hub, ct);
                 await reportPublisher.PublishActiveOperationsAsync(hub, ct);
+                await ResumePendingUploadsAsync(baseUri, cred, ct);
                 var startupRescan = RescanOnStartupAsync(hub, ct);
 
                 using var heartbeatCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -446,6 +448,69 @@ public sealed class AgentConnectionLoop(
         catch (OperationCanceledException)
         {
             // shutdown
+        }
+    }
+
+    /// <summary>
+    /// Fetches pending uploads from the server and re-enqueues any whose local
+    /// .tic file still exists. Called on initial connect and every reconnect so
+    /// orphaned uploads (from a crashed run or broken network window) are recovered.
+    /// </summary>
+    private async Task ResumePendingUploadsAsync(Uri baseUri, AgentCredentialFile cred, CancellationToken ct)
+    {
+        try
+        {
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+            var api = new AgentApiClient(http);
+
+            var token = await api.GetTokenAsync(baseUri, new TokenApiRequest(cred.AgentId, cred.ClientSecret), ct);
+            if (token is null)
+            {
+                _logger.LogWarning("ResumePendingUploads: could not obtain JWT; skipping.");
+                return;
+            }
+
+            var pending = await api.GetPendingUploadsAsync(baseUri, token.AccessToken, ct);
+            if (pending is null || pending.Length == 0)
+                return;
+
+            _logger.LogInformation(
+                "ResumePendingUploads: {Count} pending upload(s) returned by server.", pending.Length);
+
+            var cacheDir = _tapeCacheDirectory ?? AgentPaths.DefaultCacheDirectory;
+            var enqueued = 0;
+            foreach (var item in pending)
+            {
+                var localPath = TapeRunCacheLayout.GetFilePath(cacheDir, item.RunId, item.TapeFileNumber);
+                if (!File.Exists(localPath))
+                {
+                    _logger.LogWarning(
+                        "ResumePendingUploads: local file not found for file {FileId} at {Path}; skipping.",
+                        item.FileId, localPath);
+                    continue;
+                }
+
+                fileUploader.Enqueue(new TapeFileUploader.WorkItem(
+                    FileId:            item.FileId,
+                    RunId:             item.RunId,
+                    FilePath:          localPath,
+                    FileSizeBytes:     item.TotalBytes,
+                    UploadOperationId: null));
+                enqueued++;
+            }
+
+            if (enqueued > 0)
+                _logger.LogInformation(
+                    "ResumePendingUploads: {Enqueued}/{Total} upload(s) re-enqueued.",
+                    enqueued, pending.Length);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // normal shutdown
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "ResumePendingUploads failed; uploads will retry on next reconnect.");
         }
     }
 

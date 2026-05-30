@@ -2,6 +2,17 @@ using System.Text.Json.Serialization;
 
 namespace MezzoRecovery.Agent.Contracts;
 
+/// <summary>
+/// Returned by <c>GET api/agent/tape/uploads/pending</c>. Carries enough
+/// information for the agent to reconstruct the local .tic path and re-enqueue
+/// an orphaned upload after a restart or reconnect.
+/// </summary>
+public sealed record PendingUploadItem(
+    [property: JsonPropertyName("fileId")]        Guid FileId,
+    [property: JsonPropertyName("runId")]         Guid RunId,
+    [property: JsonPropertyName("tapeFileNumber")] int  TapeFileNumber,
+    [property: JsonPropertyName("totalBytes")]    long TotalBytes);
+
 public sealed record EnrollApiRequest(
     [property: JsonPropertyName("enrollmentCode")] string EnrollmentCode,
     [property: JsonPropertyName("machineFingerprint")] string MachineFingerprint,
@@ -159,6 +170,8 @@ public sealed class AgentTapePreflightResultDto
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
 [JsonSerializable(typeof(string))]
+[JsonSerializable(typeof(PendingUploadItem))]
+[JsonSerializable(typeof(PendingUploadItem[]))]
 [JsonSerializable(typeof(EnrollApiRequest))]
 [JsonSerializable(typeof(EnrollApiResponse))]
 [JsonSerializable(typeof(TokenApiRequest))]

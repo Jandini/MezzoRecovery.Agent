@@ -130,8 +130,13 @@ public sealed class TapeFileUploader(ILogger<TapeFileUploader> logger)
                 var url = new Uri(_baseUri,
                     $"api/agent/tape/runs/{item.RunId}/files/{item.FileId}/upload");
 
-                using var http   = new HttpClient { Timeout = TimeSpan.FromHours(2) };
-                using var stream = File.OpenRead(item.FilePath);
+                using var http      = new HttpClient { Timeout = TimeSpan.FromHours(2) };
+                using var fileStream = File.OpenRead(item.FilePath);
+                var totalBytes      = item.FileSizeBytes;
+
+                // Wrap with a progress-reporting stream that fires hub messages every 4 MB.
+                using var stream = new ProgressStream(fileStream, bytesRead =>
+                    ReportUploadProgress(item, bytesRead, totalBytes), progressIntervalBytes: 4 * 1024 * 1024);
 
                 var req = new HttpRequestMessage(HttpMethod.Put, url)
                 {
@@ -139,8 +144,6 @@ public sealed class TapeFileUploader(ILogger<TapeFileUploader> logger)
                 };
                 req.Content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
                 req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
-
-                var totalBytes = item.FileSizeBytes;
 
                 logger.LogInformation(
                     "Uploading file {FileId} ({Bytes} bytes) attempt {Attempt}.",
@@ -266,6 +269,75 @@ public sealed class TapeFileUploader(ILogger<TapeFileUploader> logger)
         {
             logger.LogWarning(ex, "Failed to obtain JWT for file upload.");
             return null;
+        }
+    }
+
+    /// <summary>
+    /// Transparent read-only stream wrapper that invokes a callback every
+    /// <paramref name="progressIntervalBytes"/> bytes so the caller can report upload progress.
+    /// Compatible with Native AOT — no reflection used.
+    /// </summary>
+    private sealed class ProgressStream(
+        Stream inner,
+        Action<long> onProgress,
+        long progressIntervalBytes) : Stream
+    {
+        private long _bytesRead;
+        private long _lastReported;
+
+        public override bool CanRead  => true;
+        public override bool CanSeek  => false;
+        public override bool CanWrite => false;
+        public override long Length   => inner.Length;
+        public override long Position
+        {
+            get => inner.Position;
+            set => throw new NotSupportedException();
+        }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            var n = inner.Read(buffer, offset, count);
+            Advance(n);
+            return n;
+        }
+
+        public override async ValueTask<int> ReadAsync(
+            Memory<byte> buffer, CancellationToken ct = default)
+        {
+            var n = await inner.ReadAsync(buffer, ct);
+            Advance(n);
+            return n;
+        }
+
+        public override async Task<int> ReadAsync(
+            byte[] buffer, int offset, int count, CancellationToken ct)
+        {
+            var n = await inner.ReadAsync(buffer, offset, count, ct);
+            Advance(n);
+            return n;
+        }
+
+        private void Advance(int n)
+        {
+            if (n <= 0) return;
+            _bytesRead += n;
+            if (_bytesRead - _lastReported >= progressIntervalBytes)
+            {
+                _lastReported = _bytesRead;
+                onProgress(_bytesRead);
+            }
+        }
+
+        public override void Flush() => inner.Flush();
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) inner.Dispose();
+            base.Dispose(disposing);
         }
     }
 }

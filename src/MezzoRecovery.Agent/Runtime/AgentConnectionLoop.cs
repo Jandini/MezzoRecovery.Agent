@@ -519,6 +519,7 @@ public sealed class AgentConnectionLoop(
                 }
 
                 var localPath = TapeRunCacheLayout.GetFilePath(cacheDir, item.RunId, item.TapeFileNumber);
+
                 if (!File.Exists(localPath))
                 {
                     _logger.LogWarning(

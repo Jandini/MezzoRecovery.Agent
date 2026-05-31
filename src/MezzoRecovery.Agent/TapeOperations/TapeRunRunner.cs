@@ -150,8 +150,7 @@ public sealed class TapeRunRunner(
         deviceStore.UpdateStatus(command.StableDeviceKey, AgentTapeDeviceStatus.Busy, "BUSY");
         await publisher.PublishCurrentAsync(hub, CancellationToken.None);
 
-        var cacheRunId = Guid.NewGuid();
-        logger.LogInformation("Run {RunId}: cache folder id {CacheRunId}.", command.RunId, cacheRunId);
+        var cacheRunId = command.RunId;
         var fileReporter = new TapeFileReporter(command, cacheRunId, hasher, logger);
 
         try

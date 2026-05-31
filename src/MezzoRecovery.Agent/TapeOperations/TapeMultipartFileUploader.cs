@@ -1,9 +1,7 @@
 using MezzoRecovery.Agent.Api;
 using MezzoRecovery.Agent.Contracts;
-using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.Extensions.Logging;
 using System.Net.Http.Headers;
-using System.Threading;
 
 namespace MezzoRecovery.Agent.TapeOperations;
 

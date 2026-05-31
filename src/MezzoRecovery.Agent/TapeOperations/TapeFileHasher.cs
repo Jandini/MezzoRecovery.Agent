@@ -99,6 +99,9 @@ public sealed class TapeFileHasher(
         }
 
         // Always forward to uploader, even if hash failed — the file may still be uploadable.
+        logger.LogInformation(
+            "Forwarding file {FileId} to uploader (hash {HashStatus}).",
+            item.FileId, hashHex is not null ? "ok" : "failed");
         uploader.Enqueue(new TapeFileUploader.WorkItem(
             FileId:           item.FileId,
             RunId:            item.RunId,

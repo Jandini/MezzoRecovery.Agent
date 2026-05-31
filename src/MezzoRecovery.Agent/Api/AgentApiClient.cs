@@ -34,4 +34,18 @@ public sealed class AgentApiClient(HttpClient http)
         await using var stream = await resp.Content.ReadAsStreamAsync(ct);
         return await JsonSerializer.DeserializeAsync(stream, AgentJsonContext.Default.TokenApiResponse, ct);
     }
+
+    public async Task<PendingUploadItem[]?> GetPendingUploadsAsync(
+        Uri baseUri, string bearerToken, CancellationToken ct)
+    {
+        using var msg = new HttpRequestMessage(HttpMethod.Get,
+            new Uri(baseUri, "api/agent/tape/uploads/pending"));
+        msg.Headers.Authorization =
+            new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", bearerToken);
+        using var resp = await http.SendAsync(msg, ct);
+        if (!resp.IsSuccessStatusCode)
+            return null;
+        await using var stream = await resp.Content.ReadAsStreamAsync(ct);
+        return await JsonSerializer.DeserializeAsync(stream, AgentJsonContext.Default.PendingUploadItemArray, ct);
+    }
 }

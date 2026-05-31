@@ -23,6 +23,12 @@ public sealed record StartTapeRunCommand(
 public sealed record CancelTapeRunCommand(
     [property: JsonPropertyName("runId")] Guid RunId);
 
+public sealed record CancelTapeRunUploadsCommand(
+    [property: JsonPropertyName("runId")] Guid RunId);
+
+public sealed record StopTapeRunReadingCommand(
+    [property: JsonPropertyName("runId")] Guid RunId);
+
 public sealed record ExecuteTapeMediaActionCommand(
     [property: JsonPropertyName("tapeDeviceId")] Guid TapeDeviceId,
     [property: JsonPropertyName("nonRewindingDevicePath")] string NonRewindingDevicePath,
@@ -122,8 +128,6 @@ public sealed record TapeRunProgressReport(
     [property: JsonPropertyName("blocksRead")] long BlocksRead,
     [property: JsonPropertyName("filemarksRead")] long FilemarksRead,
     [property: JsonPropertyName("tapeFilesCreated")] int TapeFilesCreated,
-    [property: JsonPropertyName("bytesUploaded")] long BytesUploaded,
-    [property: JsonPropertyName("filesUploaded")] int FilesUploaded,
     [property: JsonPropertyName("currentBlock")] long? CurrentBlock,
     [property: JsonPropertyName("currentFileIndex")] int? CurrentFileIndex,
     [property: JsonPropertyName("currentOperationType")] string? CurrentOperationType,

@@ -49,8 +49,8 @@ public sealed class AgentConnectionLoop(
         fileUploader.Initialize(baseUri, cred.AgentId, cred.ClientSecret);
 
         // Start background workers. They run for the lifetime of the process.
-        _ = fileHasher.StartAsync(ct);
-        _ = fileUploader.StartAsync(ct);
+        ObserveWorker(fileHasher.StartAsync(ct), "hasher");
+        ObserveWorker(fileUploader.StartAsync(ct), "uploader");
 
         AgentApiClient api = null!;
         var version = Assembly.GetExecutingAssembly().GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
@@ -129,6 +129,7 @@ public sealed class AgentConnectionLoop(
                             await ReportCacheStatusAsync(hub!, CancellationToken.None);
                             await reportPublisher.PublishFullDiscoveryAsync(hub!, CancellationToken.None);
                             await reportPublisher.PublishActiveOperationsAsync(hub!, CancellationToken.None);
+                            await ResumePendingUploadsAsync(baseUri, cred, CancellationToken.None);
                             // Fire preflight for any tape that was loaded while we were offline —
                             // we can't assume the same cartridge is still present.
                             _ = TriggerReconnectPreflightAsync(hub!);
@@ -227,6 +228,20 @@ public sealed class AgentConnectionLoop(
                     await reportPublisher.PublishActiveOperationsAsync(hub!, CancellationToken.None);
                 });
 
+                hub.On<CancelTapeRunUploadsCommand>("CancelTapeRunUploads", command =>
+                {
+                    _logger.LogInformation("CancelTapeRunUploads received for run {RunId}.", command.RunId);
+                    fileUploader.CancelRunUploads(command.RunId);
+                    return Task.CompletedTask;
+                });
+
+                hub.On<StopTapeRunReadingCommand>("StopTapeRunReading", async command =>
+                {
+                    _logger.LogInformation("StopTapeRunReading received for run {RunId}.", command.RunId);
+                    tapeRunRunner.RequestStopReading(command.RunId);
+                    await reportPublisher.PublishActiveOperationsAsync(hub!, CancellationToken.None);
+                });
+
                 hub.On<ExecuteTapeMediaActionCommand>("ExecuteTapeMediaAction", command =>
                 {
                     _logger.LogInformation(
@@ -273,6 +288,7 @@ public sealed class AgentConnectionLoop(
                 await ReportCacheStatusAsync(hub, ct);
                 await reportPublisher.PublishFullDiscoveryAsync(hub, ct);
                 await reportPublisher.PublishActiveOperationsAsync(hub, ct);
+                await ResumePendingUploadsAsync(baseUri, cred, ct);
                 var startupRescan = RescanOnStartupAsync(hub, ct);
 
                 using var heartbeatCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -449,6 +465,69 @@ public sealed class AgentConnectionLoop(
         }
     }
 
+    /// <summary>
+    /// Fetches pending uploads from the server and re-enqueues any whose local
+    /// .tic file still exists. Called on initial connect and every reconnect so
+    /// orphaned uploads (from a crashed run or broken network window) are recovered.
+    /// </summary>
+    private async Task ResumePendingUploadsAsync(Uri baseUri, AgentCredentialFile cred, CancellationToken ct)
+    {
+        try
+        {
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+            var api = new AgentApiClient(http);
+
+            var token = await api.GetTokenAsync(baseUri, new TokenApiRequest(cred.AgentId, cred.ClientSecret), ct);
+            if (token is null)
+            {
+                _logger.LogWarning("ResumePendingUploads: could not obtain JWT; skipping.");
+                return;
+            }
+
+            var pending = await api.GetPendingUploadsAsync(baseUri, token.AccessToken, ct);
+            if (pending is null || pending.Length == 0)
+                return;
+
+            _logger.LogInformation(
+                "ResumePendingUploads: {Count} pending upload(s) returned by server.", pending.Length);
+
+            var cacheDir = _tapeCacheDirectory ?? AgentPaths.DefaultCacheDirectory;
+            var enqueued = 0;
+            foreach (var item in pending)
+            {
+                var localPath = TapeRunCacheLayout.GetFilePath(cacheDir, item.RunId, item.TapeFileNumber);
+                if (!File.Exists(localPath))
+                {
+                    _logger.LogWarning(
+                        "ResumePendingUploads: local file not found for file {FileId} at {Path}; skipping.",
+                        item.FileId, localPath);
+                    continue;
+                }
+
+                fileUploader.Enqueue(new TapeFileUploader.WorkItem(
+                    FileId:            item.FileId,
+                    RunId:             item.RunId,
+                    FilePath:          localPath,
+                    FileSizeBytes:     item.TotalBytes,
+                    UploadOperationId: null));
+                enqueued++;
+            }
+
+            if (enqueued > 0)
+                _logger.LogInformation(
+                    "ResumePendingUploads: {Enqueued}/{Total} upload(s) re-enqueued.",
+                    enqueued, pending.Length);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // normal shutdown
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "ResumePendingUploads failed; uploads will retry on next reconnect.");
+        }
+    }
+
     private async Task ReportCacheStatusAsync(HubConnection hub, CancellationToken ct)
     {
         try
@@ -487,6 +566,17 @@ public sealed class AgentConnectionLoop(
         {
             return (null, ex.Message);
         }
+    }
+
+    private void ObserveWorker(Task task, string name)
+    {
+        _ = task.ContinueWith(t =>
+        {
+            if (t.IsFaulted)
+                _logger.LogError(t.Exception, "Background worker '{Name}' faulted unexpectedly.", name);
+            else if (t.IsCanceled)
+                _logger.LogDebug("Background worker '{Name}' was cancelled.", name);
+        }, TaskScheduler.Default);
     }
 
     private sealed class UnboundedRetryPolicy : IRetryPolicy

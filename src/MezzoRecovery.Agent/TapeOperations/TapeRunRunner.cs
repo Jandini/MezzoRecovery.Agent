@@ -55,6 +55,24 @@ public sealed class TapeRunRunner(
         }
     }
 
+    /// <summary>
+    /// Signals the reading phase of the run to stop while allowing the upload phase
+    /// to drain and complete naturally. Safe to call from any thread; no-op if the
+    /// run is not active.
+    /// </summary>
+    public void RequestStopReading(Guid runId)
+    {
+        if (_runToDevice.TryGetValue(runId, out var deviceId))
+        {
+            if (state.RequestStopReading(deviceId))
+                logger.LogInformation("Stop reading requested for run {RunId} (device {DeviceId}).", runId, deviceId);
+        }
+        else
+        {
+            logger.LogInformation("StopTapeRunReading {RunId}: run not active.", runId);
+        }
+    }
+
     // ── Main run ───────────────────────────────────────────────────────────────
 
     private async Task RunAsync(HubConnection hub, StartTapeRunCommand command)
@@ -132,7 +150,9 @@ public sealed class TapeRunRunner(
         deviceStore.UpdateStatus(command.StableDeviceKey, AgentTapeDeviceStatus.Busy, "BUSY");
         await publisher.PublishCurrentAsync(hub, CancellationToken.None);
 
-        var fileReporter = new TapeFileReporter(command, hasher, logger);
+        var cacheRunId = Guid.NewGuid();
+        logger.LogInformation("Run {RunId}: cache folder id {CacheRunId}.", command.RunId, cacheRunId);
+        var fileReporter = new TapeFileReporter(command, cacheRunId, hasher, logger);
 
         try
         {
@@ -148,11 +168,11 @@ public sealed class TapeRunRunner(
             TapeCloneResult result;
             if (opType == TapeOperationTypes.Clone)
             {
-                result = await RunCloneAsync(hub, command, runOp, fileReporter, cts.Token);
+                result = await RunCloneAsync(hub, command, runOp, fileReporter, cacheRunId, runOp.ReadingToken);
             }
             else
             {
-                result = await RunReadAsync(hub, command, runOp, fileReporter, cts.Token);
+                result = await RunReadAsync(hub, command, runOp, fileReporter, runOp.ReadingToken);
             }
 
             if (mainOpId.HasValue)
@@ -196,6 +216,7 @@ public sealed class TapeRunRunner(
             await fileReporter.DisposeAsync();
             _runToDevice.TryRemove(command.RunId, out _);
             state.Remove(command.TapeDeviceId);
+            runOp.ReadingCts.Dispose();
             cts.Dispose();
 
             try
@@ -241,10 +262,11 @@ public sealed class TapeRunRunner(
         StartTapeRunCommand command,
         TapeOperationStateStore.RunningOperation op,
         TapeFileReporter fileReporter,
+        Guid cacheRunId,
         CancellationToken ct)
     {
         var cacheDir = command.CacheDirectory ?? AgentPaths.DefaultCacheDirectory;
-        var runDir   = TapeRunCacheLayout.GetRunDirectory(cacheDir, command.RunId);
+        var runDir   = TapeRunCacheLayout.GetRunDirectory(cacheDir, cacheRunId);
         Directory.CreateDirectory(runDir);
 
         var effectiveBlockSize  = command.BlockSizeBytes  ?? 0;
@@ -385,8 +407,6 @@ public sealed class TapeRunRunner(
                 BlocksRead:                  op.LastBlocksRead,
                 FilemarksRead:               op.LastFilemarksRead,
                 TapeFilesCreated:            Math.Max(0, stats.CurrentFileNumber - 1),
-                BytesUploaded:               0,
-                FilesUploaded:               0,
                 CurrentBlock:                op.LastBlocksRead,
                 CurrentFileIndex:            stats.CurrentFileNumber,
                 CurrentOperationType:        operationType,

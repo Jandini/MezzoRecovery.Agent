@@ -19,6 +19,7 @@ namespace MezzoRecovery.Agent.TapeOperations;
 internal sealed class TapeFileReporter : IAsyncDisposable
 {
     private readonly StartTapeRunCommand _command;
+    private readonly Guid                _cacheRunId;
     private readonly TapeFileHasher      _hasher;
     private readonly ILogger             _logger;
     private readonly bool                _isClone;
@@ -42,10 +43,12 @@ internal sealed class TapeFileReporter : IAsyncDisposable
 
     public TapeFileReporter(
         StartTapeRunCommand command,
+        Guid cacheRunId,
         TapeFileHasher hasher,
         ILogger logger)
     {
         _command        = command;
+        _cacheRunId     = cacheRunId;
         _hasher         = hasher;
         _logger         = logger;
         _isClone        = command.RunType.Equals("Clone", StringComparison.OrdinalIgnoreCase);
@@ -73,10 +76,13 @@ internal sealed class TapeFileReporter : IAsyncDisposable
     /// <summary>Completes the last open file at end-of-tape and awaits the send.</summary>
     public Task OnReadFinishedAsync(HubConnection hub, TapeCloneStats finalStats, DateTimeOffset now)
     {
-        long bytes  = ToLong(finalStats.BytesInCurrentFile);
-        long blocks = ToLong(finalStats.BlocksInCurrentFile);
-        long totalBlocks = ToLong(finalStats.BlocksProcessed);
-        return EnqueueAndWaitAsync(() => ProcessReadFinishedAsync(hub, bytes, blocks, totalBlocks, now));
+        int  file         = Math.Max(1, finalStats.CurrentFileNumber);
+        long bytesInFile  = ToLong(finalStats.BytesInCurrentFile);
+        long blocksInFile = ToLong(finalStats.BlocksInCurrentFile);
+        long totalBytes   = ToLong(finalStats.BytesProcessed);
+        long totalBlocks  = ToLong(finalStats.BlocksProcessed);
+        return EnqueueAndWaitAsync(() =>
+            ProcessReadFinishedAsync(hub, file, bytesInFile, blocksInFile, totalBytes, totalBlocks, now));
     }
 
     public Task OnReadFailedAsync(HubConnection hub, string errorMessage, DateTimeOffset now) =>
@@ -113,15 +119,17 @@ internal sealed class TapeFileReporter : IAsyncDisposable
         DateTimeOffset now)
     {
         // File transition: complete the outgoing file before opening the next.
+        // At transition, bytesInFile/blocksInFile belong to the NEW file (N+1), so subtracting
+        // them from the running totals gives the cumulative through the end of the old file.
         if (_currentFileId is not null && file != _currentFileNumber)
             await CompleteCurrentAsync(hub, now,
-                bytesAtBoundary:  totalBytes  - _fileStartBytesTotal,
-                blocksAtBoundary: totalBlocks - _fileStartBlocksTotal,
+                bytesAtBoundary:  (totalBytes  - bytesInFile)  - _fileStartBytesTotal,
+                blocksAtBoundary: (totalBlocks - blocksInFile) - _fileStartBlocksTotal,
                 filemarkAfter: true);
 
         // Start a new file on the first data block.
         if (_currentFileId is null && (bytesInFile > 0 || blocksInFile > 0))
-            await StartNewAsync(hub, file, totalBytes, totalBlocks, now);
+            await StartNewAsync(hub, file, bytesInFile, blocksInFile, totalBytes, totalBlocks, now);
 
         if (_currentFileId is null)
             return;
@@ -136,13 +144,21 @@ internal sealed class TapeFileReporter : IAsyncDisposable
     }
 
     private async Task ProcessReadFinishedAsync(
-        HubConnection hub, long bytes, long blocks, long totalBlocks, DateTimeOffset now)
+        HubConnection hub, int file, long bytesInFile, long blocksInFile,
+        long totalBytes, long totalBlocks, DateTimeOffset now)
     {
+        // Create the last file if it was too short to appear in any throttled progress tick.
+        if (_currentFileId is null && (bytesInFile > 0 || blocksInFile > 0))
+            await StartNewAsync(hub, file, bytesInFile, blocksInFile, totalBytes, totalBlocks, now);
+
         if (_currentFileId is null) return;
+
+        // At EndOfMedia, totalBytes is the cumulative total through the last file's final block
+        // (no trailing new-file bytes to subtract, unlike the mid-tape transition case).
         await CompleteCurrentAsync(hub, now,
-            bytesAtBoundary:  bytes,
-            blocksAtBoundary: blocks,
-            filemarkAfter: false);  // end-of-tape — no trailing filemark
+            bytesAtBoundary:  totalBytes  - _fileStartBytesTotal,
+            blocksAtBoundary: totalBlocks - _fileStartBlocksTotal,
+            filemarkAfter: false);
     }
 
     private async Task ProcessTerminalAsync(
@@ -167,15 +183,17 @@ internal sealed class TapeFileReporter : IAsyncDisposable
     // ── File lifecycle helpers ─────────────────────────────────────────────────
 
     private async Task StartNewAsync(
-        HubConnection hub, int file, long totalBytes, long totalBlocks, DateTimeOffset now)
+        HubConnection hub, int file,
+        long bytesInFile, long blocksInFile,
+        long totalBytes, long totalBlocks, DateTimeOffset now)
     {
         _currentFileNumber    = file;
         _fileStartedAt        = now;
-        _fileStartBytesTotal  = totalBytes;
-        _fileStartBlocksTotal = totalBlocks;
+        _fileStartBytesTotal  = totalBytes  - bytesInFile;   // bytes before this file started
+        _fileStartBlocksTotal = totalBlocks - blocksInFile;  // blocks before this file started
 
         var localPath = _isClone
-            ? TapeRunCacheLayout.GetFilePath(_cacheDirectory, _command.RunId, file)
+            ? TapeRunCacheLayout.GetFilePath(_cacheDirectory, _cacheRunId, file)
             : null;
 
         var fileName = _isClone
@@ -230,22 +248,32 @@ internal sealed class TapeFileReporter : IAsyncDisposable
         long avg     = ComputeAvg(now, bytesAtBoundary);
         long endBlock = _fileStartBlocksTotal + blocksAtBoundary;
 
-        await SendAsync(hub, "ReportTapeFileReadCompleted",
-            new TapeFileReadCompletedReport(
-                FileId:                   id,
-                SizeBytes:                Math.Max(0, bytesAtBoundary),
-                EndBlock:                 endBlock,
-                BlockCount:               Math.Max(0, blocksAtBoundary),
-                FilemarkAfter:            filemarkAfter,
-                ThroughputBytesPerSecond: avg,
-                Succeeded:                true,
-                ErrorMessage:             null));
+        // Use InvokeAsync (not SendAsync) so the server has committed the TapeFileUpload
+        // record before we hand off to the hasher. Without this, a fast hash completes
+        // and the uploader PUTs before the upload row exists → 404 non-retryable failure.
+        try
+        {
+            await hub.InvokeAsync("ReportTapeFileReadCompleted",
+                new TapeFileReadCompletedReport(
+                    FileId:                   id,
+                    SizeBytes:                Math.Max(0, bytesAtBoundary),
+                    EndBlock:                 endBlock,
+                    BlockCount:               Math.Max(0, blocksAtBoundary),
+                    FilemarkAfter:            filemarkAfter,
+                    ThroughputBytesPerSecond: avg,
+                    Succeeded:                true,
+                    ErrorMessage:             null));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "ReportTapeFileReadCompleted failed for file {FileId}.", id);
+        }
 
         // In Clone mode, hand the completed .tic file off to the hasher.
         if (_isClone)
         {
             var localPath = TapeRunCacheLayout.GetFilePath(
-                _cacheDirectory, _command.RunId, _currentFileNumber);
+                _cacheDirectory, _cacheRunId, _currentFileNumber);
             _hasher.Enqueue(new TapeFileHasher.WorkItem(
                 FileId:           id,
                 RunId:            _command.RunId,

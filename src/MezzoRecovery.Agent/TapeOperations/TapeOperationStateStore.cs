@@ -86,6 +86,15 @@ public sealed class TapeOperationStateStore
         return true;
     }
 
+    public bool RequestStopReading(Guid tapeDeviceId)
+    {
+        if (!_byDevice.TryGetValue(tapeDeviceId, out var op))
+            return false;
+
+        op.RequestStopReading();
+        return true;
+    }
+
     public void Remove(Guid tapeDeviceId) => _byDevice.TryRemove(tapeDeviceId, out _);
 
     public ActiveOperationSnapshot[] BuildSnapshots() =>
@@ -130,6 +139,12 @@ public sealed class TapeOperationStateStore
         public CancellationTokenSource Cts { get; } = cts;
         public CancellationToken Token => Cts.Token;
 
+        // Linked to Cts — cancelling Cts also cancels this one.
+        // Cancelled independently by StopTapeRunReading (stop reading, continue uploads).
+        public CancellationTokenSource ReadingCts { get; } =
+            CancellationTokenSource.CreateLinkedTokenSource(cts.Token);
+        public CancellationToken ReadingToken => ReadingCts.Token;
+
         // Last progress numbers -- updated on every progress tick; used for the
         // reconnect snapshot and to compose final stats if a stop arrives early.
         public long LastBytesRead;
@@ -149,6 +164,12 @@ public sealed class TapeOperationStateStore
         {
             if (!Cts.IsCancellationRequested)
                 Cts.Cancel();
+        }
+
+        public void RequestStopReading()
+        {
+            if (!ReadingCts.IsCancellationRequested)
+                ReadingCts.Cancel();
         }
     }
 }

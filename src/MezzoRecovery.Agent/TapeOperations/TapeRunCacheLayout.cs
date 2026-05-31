@@ -17,20 +17,5 @@ internal static class TapeRunCacheLayout
     public static string GetFilePath(string cacheDirectory, Guid runId, int fileNumber) =>
         Path.Combine(GetRunDirectory(cacheDirectory, runId), $"segment.{fileNumber - 1:D4}.tic");
 
-    /// <summary>
-    /// Deletes the run directory and all its .tic segments. Best-effort; errors are swallowed.
-    /// </summary>
-    public static void TryDeleteRunDirectory(string cacheDirectory, Guid runId)
-    {
-        try
-        {
-            var dir = GetRunDirectory(cacheDirectory, runId);
-            if (Directory.Exists(dir))
-                Directory.Delete(dir, recursive: true);
-        }
-        catch
-        {
-            // best-effort
-        }
-    }
+
 }

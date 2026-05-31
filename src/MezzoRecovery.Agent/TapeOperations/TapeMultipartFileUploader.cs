@@ -304,17 +304,19 @@ internal sealed class TapeMultipartFileUploader(
 
             if (response.StatusCode == System.Net.HttpStatusCode.Forbidden)
             {
-                // Signed URL expired — caller will retry with a fresh sign request.
+                var body = await response.Content.ReadAsStringAsync(cts.Token);
                 logger.LogWarning(
-                    "Signed URL for part {Part} returned 403 (expired). Will re-sign on retry.",
-                    partNumber);
+                    "Part {Part} of file {FileId} PUT returned 403. MinIO error: {Body}",
+                    partNumber, workItem.FileId, body);
                 return null;
             }
 
             if (!response.IsSuccessStatusCode)
             {
+                var body = await response.Content.ReadAsStringAsync(cts.Token);
                 logger.LogWarning(
-                    "Part {Part} PUT returned {StatusCode}.", partNumber, (int)response.StatusCode);
+                    "Part {Part} of file {FileId} PUT returned {StatusCode}. Body: {Body}",
+                    partNumber, workItem.FileId, (int)response.StatusCode, body);
                 return null;
             }
 

@@ -46,7 +46,8 @@ public sealed class AgentConnectionLoop(
         }
 
         // Initialise the uploader with credentials (once — hub updated on each connect).
-        fileUploader.Initialize(baseUri, cred.AgentId, cred.ClientSecret);
+        fileUploader.Initialize(baseUri, cred.AgentId, cred.ClientSecret,
+            cacheDirectory: _tapeCacheDirectory ?? AgentPaths.DefaultCacheDirectory);
 
         // Start background workers. They run for the lifetime of the process.
         ObserveWorker(fileHasher.StartAsync(ct), "hasher");
@@ -232,6 +233,20 @@ public sealed class AgentConnectionLoop(
                 {
                     _logger.LogInformation("CancelTapeRunUploads received for run {RunId}.", command.RunId);
                     fileUploader.CancelRunUploads(command.RunId);
+                    return Task.CompletedTask;
+                });
+
+                hub.On<PauseTapeRunUploadCommand>("PauseTapeRunUpload", command =>
+                {
+                    _logger.LogInformation("PauseTapeRunUpload received for run {RunId}.", command.RunId);
+                    fileUploader.PauseRunUpload(command.RunId);
+                    return Task.CompletedTask;
+                });
+
+                hub.On<ResumeTapeRunUploadCommand>("ResumeTapeRunUpload", command =>
+                {
+                    _logger.LogInformation("ResumeTapeRunUpload received for run {RunId}.", command.RunId);
+                    fileUploader.ResumeRunUpload(command.RunId);
                     return Task.CompletedTask;
                 });
 
@@ -495,6 +510,14 @@ public sealed class AgentConnectionLoop(
             var enqueued = 0;
             foreach (var item in pending)
             {
+                // Skip uploads that are paused — they will remain paused until explicitly resumed.
+                if (item.IsPaused)
+                {
+                    _logger.LogInformation(
+                        "ResumePendingUploads: file {FileId} is paused; not re-enqueuing.", item.FileId);
+                    continue;
+                }
+
                 var localPath = TapeRunCacheLayout.GetFilePath(cacheDir, item.RunId, item.TapeFileNumber);
                 if (!File.Exists(localPath))
                 {
@@ -505,11 +528,12 @@ public sealed class AgentConnectionLoop(
                 }
 
                 fileUploader.Enqueue(new TapeFileUploader.WorkItem(
-                    FileId:            item.FileId,
-                    RunId:             item.RunId,
-                    FilePath:          localPath,
-                    FileSizeBytes:     item.TotalBytes,
-                    UploadOperationId: null));
+                    FileId:                    item.FileId,
+                    RunId:                     item.RunId,
+                    FilePath:                  localPath,
+                    FileSizeBytes:             item.TotalBytes,
+                    UploadOperationId:         null,
+                    ExistingUploadSessionId:   item.UploadSessionId));
                 enqueued++;
             }
 

@@ -228,6 +228,13 @@ public sealed class AgentConnectionLoop(
                     await reportPublisher.PublishActiveOperationsAsync(hub!, CancellationToken.None);
                 });
 
+                hub.On<StopTapeRunReadingCommand>("StopTapeRunReading", async command =>
+                {
+                    _logger.LogInformation("StopTapeRunReading received for run {RunId}.", command.RunId);
+                    tapeRunRunner.RequestStopReading(command.RunId);
+                    await reportPublisher.PublishActiveOperationsAsync(hub!, CancellationToken.None);
+                });
+
                 hub.On<ExecuteTapeMediaActionCommand>("ExecuteTapeMediaAction", command =>
                 {
                     _logger.LogInformation(

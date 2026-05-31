@@ -19,6 +19,7 @@ namespace MezzoRecovery.Agent.TapeOperations;
 internal sealed class TapeFileReporter : IAsyncDisposable
 {
     private readonly StartTapeRunCommand _command;
+    private readonly Guid                _cacheRunId;
     private readonly TapeFileHasher      _hasher;
     private readonly ILogger             _logger;
     private readonly bool                _isClone;
@@ -42,10 +43,12 @@ internal sealed class TapeFileReporter : IAsyncDisposable
 
     public TapeFileReporter(
         StartTapeRunCommand command,
+        Guid cacheRunId,
         TapeFileHasher hasher,
         ILogger logger)
     {
         _command        = command;
+        _cacheRunId     = cacheRunId;
         _hasher         = hasher;
         _logger         = logger;
         _isClone        = command.RunType.Equals("Clone", StringComparison.OrdinalIgnoreCase);
@@ -190,7 +193,7 @@ internal sealed class TapeFileReporter : IAsyncDisposable
         _fileStartBlocksTotal = totalBlocks - blocksInFile;  // blocks before this file started
 
         var localPath = _isClone
-            ? TapeRunCacheLayout.GetFilePath(_cacheDirectory, _command.RunId, file)
+            ? TapeRunCacheLayout.GetFilePath(_cacheDirectory, _cacheRunId, file)
             : null;
 
         var fileName = _isClone
@@ -270,7 +273,7 @@ internal sealed class TapeFileReporter : IAsyncDisposable
         if (_isClone)
         {
             var localPath = TapeRunCacheLayout.GetFilePath(
-                _cacheDirectory, _command.RunId, _currentFileNumber);
+                _cacheDirectory, _cacheRunId, _currentFileNumber);
             _hasher.Enqueue(new TapeFileHasher.WorkItem(
                 FileId:           id,
                 RunId:            _command.RunId,

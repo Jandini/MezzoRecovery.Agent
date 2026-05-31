@@ -150,7 +150,9 @@ public sealed class TapeRunRunner(
         deviceStore.UpdateStatus(command.StableDeviceKey, AgentTapeDeviceStatus.Busy, "BUSY");
         await publisher.PublishCurrentAsync(hub, CancellationToken.None);
 
-        var fileReporter = new TapeFileReporter(command, hasher, logger);
+        var cacheRunId = Guid.NewGuid();
+        logger.LogInformation("Run {RunId}: cache folder id {CacheRunId}.", command.RunId, cacheRunId);
+        var fileReporter = new TapeFileReporter(command, cacheRunId, hasher, logger);
 
         try
         {
@@ -166,7 +168,7 @@ public sealed class TapeRunRunner(
             TapeCloneResult result;
             if (opType == TapeOperationTypes.Clone)
             {
-                result = await RunCloneAsync(hub, command, runOp, fileReporter, runOp.ReadingToken);
+                result = await RunCloneAsync(hub, command, runOp, fileReporter, cacheRunId, runOp.ReadingToken);
             }
             else
             {
@@ -260,10 +262,11 @@ public sealed class TapeRunRunner(
         StartTapeRunCommand command,
         TapeOperationStateStore.RunningOperation op,
         TapeFileReporter fileReporter,
+        Guid cacheRunId,
         CancellationToken ct)
     {
         var cacheDir = command.CacheDirectory ?? AgentPaths.DefaultCacheDirectory;
-        var runDir   = TapeRunCacheLayout.GetRunDirectory(cacheDir, command.RunId);
+        var runDir   = TapeRunCacheLayout.GetRunDirectory(cacheDir, cacheRunId);
         Directory.CreateDirectory(runDir);
 
         var effectiveBlockSize  = command.BlockSizeBytes  ?? 0;

@@ -26,13 +26,25 @@ internal sealed class TapeMultipartFileUploader(
 
     private long _uploadedBytes;
     private long _totalBytes;
+    private long _lastThroughputBytesPerSecond;
     private bool _done;
 
     public long GetUploadedBytes() => Interlocked.Read(ref _uploadedBytes);
     public long GetTotalBytes() => _totalBytes;
+    public long? GetLastThroughputBytesPerSecond()
+    {
+        var v = Interlocked.Read(ref _lastThroughputBytesPerSecond);
+        return v > 0 ? v : null;
+    }
     public Guid FileId { get; private set; }
     public Guid RunId { get; private set; }
     public bool IsDone => _done;
+
+    /// <summary>
+    /// Called immediately after a part upload completes. Args: (bytesUploaded, throughputBytesPerSecond).
+    /// Set before calling UploadAsync. Fire-and-forget semantics — exceptions are swallowed by the caller.
+    /// </summary>
+    public Func<long, long, Task>? OnPartCompleted { get; set; }
 
     public async Task UploadAsync(
         UploadWorkItem workItem,
@@ -188,6 +200,7 @@ internal sealed class TapeMultipartFileUploader(
 
                 try
                 {
+                    var partStartMs = Environment.TickCount64;
                     var etag = await UploadPartOnceAsync(workItem, session, partNumber, token, ct);
                     if (etag is null)
                     {
@@ -215,6 +228,11 @@ internal sealed class TapeMultipartFileUploader(
                     allCompleted[partNumber] = etag;
                     Interlocked.Add(ref _uploadedBytes, length);
 
+                    // Compute and store throughput from measured upload time.
+                    var elapsedSec = Math.Max(0.001, (Environment.TickCount64 - partStartMs) / 1000.0);
+                    var throughput = (long)(length / elapsedSec);
+                    Interlocked.Exchange(ref _lastThroughputBytesPerSecond, throughput);
+
                     // Save checkpoint.
                     checkpoint.CompletedParts = allCompleted
                         .Select(kv => new CheckpointPartDto { PartNumber = kv.Key, ETag = kv.Value })
@@ -224,6 +242,12 @@ internal sealed class TapeMultipartFileUploader(
                     logger.LogDebug(
                         "Part {Part}/{Total} completed for file {FileId}. ETag: {ETag}",
                         partNumber, session.TotalParts, workItem.FileId, etag);
+
+                    // Notify uploader of part completion so it can push an immediate progress report.
+                    var callback = OnPartCompleted;
+                    if (callback is not null)
+                        _ = Task.Run(() => callback(GetUploadedBytes(), throughput));
+
                     return;
                 }
                 catch (OperationCanceledException)

@@ -181,6 +181,23 @@ public sealed class TapeFileUploader(
     private async Task RunUploadAsync(
         TapeMultipartFileUploader uploader, WorkItem item, CancellationToken ct)
     {
+        uploader.OnPartCompleted = async (uploaded, throughput) =>
+        {
+            var hub = _hub;
+            if (hub is null) return;
+            try
+            {
+                await hub.SendAsync("ReportTapeFileUploadProgress",
+                    new TapeFileUploadProgressReport(
+                        FileId: item.FileId,
+                        BytesUploaded: uploaded,
+                        TotalBytes: item.FileSizeBytes,
+                        ThroughputBytesPerSecond: throughput),
+                    CancellationToken.None);
+            }
+            catch { }
+        };
+
         try
         {
             await uploader.UploadAsync(
@@ -212,6 +229,8 @@ public sealed class TapeFileUploader(
 
     // ── Progress publisher ────────────────────────────────────────────────────
 
+    // Heartbeat: sends current byte counts every second so the API can update BytesUploaded
+    // even between part completions. Throughput comes from the per-part callback above.
     private async Task PublishProgressAsync(CancellationToken ct)
     {
         try
@@ -226,17 +245,15 @@ public sealed class TapeFileUploader(
                 foreach (var (fileId, uploader) in _activeUploaders)
                 {
                     if (uploader.IsDone) continue;
-                    var uploaded = uploader.GetUploadedBytes();
-                    var total    = uploader.GetTotalBytes();
 
                     try
                     {
                         await hub.SendAsync("ReportTapeFileUploadProgress",
                             new TapeFileUploadProgressReport(
                                 FileId: fileId,
-                                BytesUploaded: uploaded,
-                                TotalBytes: total,
-                                ThroughputBytesPerSecond: null),
+                                BytesUploaded: uploader.GetUploadedBytes(),
+                                TotalBytes: uploader.GetTotalBytes(),
+                                ThroughputBytesPerSecond: uploader.GetLastThroughputBytesPerSecond()),
                             ct);
                     }
                     catch { /* best-effort */ }

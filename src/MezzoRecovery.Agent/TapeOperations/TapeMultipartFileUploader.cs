@@ -331,6 +331,16 @@ internal sealed class TapeMultipartFileUploader(
             logger.LogWarning("Part {Part} upload stalled (no data for {Timeout}s).", partNumber, StallTimeout.TotalSeconds);
             return null;
         }
+        catch (HttpRequestException hre) when (hre.InnerException is System.Security.Authentication.AuthenticationException)
+        {
+            logger.LogError(
+                "TLS handshake failed uploading part {Part} of file {FileId} to {Scheme}://{Host}. " +
+                "The storage endpoint is responding with non-TLS data. " +
+                "Verify that TapeObjectStorage:PublicEndpoint uses the correct scheme (http vs https).",
+                partNumber, workItem.FileId,
+                request.RequestUri?.Scheme, request.RequestUri?.Host);
+            throw;
+        }
     }
 
     private async Task<string?> GetTokenAsync(CancellationToken ct)

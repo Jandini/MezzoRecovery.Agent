@@ -1,4 +1,5 @@
 using MezzoRecovery.Agent.Contracts;
+using Microsoft.Extensions.Logging;
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
@@ -9,7 +10,9 @@ namespace MezzoRecovery.Agent.Api;
 /// HTTP client for the S3 multipart upload session API endpoints.
 /// All calls are authenticated with a bearer token from <see cref="AgentApiClient"/>.
 /// </summary>
-internal sealed class AgentTapeUploadSessionApiClient(HttpClient http)
+internal sealed class AgentTapeUploadSessionApiClient(
+    HttpClient http,
+    ILogger<AgentTapeUploadSessionApiClient>? logger = null)
 {
     private const string ApiBase = "api/agent/tape";
 
@@ -30,7 +33,11 @@ internal sealed class AgentTapeUploadSessionApiClient(HttpClient http)
         msg.Headers.Authorization = Bearer(bearerToken);
 
         using var resp = await http.SendAsync(msg, ct);
-        if (!resp.IsSuccessStatusCode) return null;
+        if (!resp.IsSuccessStatusCode)
+        {
+            await LogFailureAsync(resp, "StartOrResumeSession", ct);
+            return null;
+        }
 
         await using var stream = await resp.Content.ReadAsStreamAsync(ct);
         return await JsonSerializer.DeserializeAsync(
@@ -53,7 +60,11 @@ internal sealed class AgentTapeUploadSessionApiClient(HttpClient http)
         msg.Headers.Authorization = Bearer(bearerToken);
 
         using var resp = await http.SendAsync(msg, ct);
-        if (!resp.IsSuccessStatusCode) return null;
+        if (!resp.IsSuccessStatusCode)
+        {
+            await LogFailureAsync(resp, "SignParts", ct);
+            return null;
+        }
 
         await using var stream = await resp.Content.ReadAsStreamAsync(ct);
         return await JsonSerializer.DeserializeAsync(
@@ -77,6 +88,8 @@ internal sealed class AgentTapeUploadSessionApiClient(HttpClient http)
         msg.Headers.Authorization = Bearer(bearerToken);
 
         using var resp = await http.SendAsync(msg, ct);
+        if (!resp.IsSuccessStatusCode && resp.StatusCode != HttpStatusCode.NoContent)
+            await LogFailureAsync(resp, $"CompletePart/{partNumber}", ct);
         return resp.IsSuccessStatusCode || resp.StatusCode == HttpStatusCode.NoContent;
     }
 
@@ -92,7 +105,11 @@ internal sealed class AgentTapeUploadSessionApiClient(HttpClient http)
         msg.Headers.Authorization = Bearer(bearerToken);
 
         using var resp = await http.SendAsync(msg, ct);
-        if (!resp.IsSuccessStatusCode) return null;
+        if (!resp.IsSuccessStatusCode)
+        {
+            await LogFailureAsync(resp, "CompleteSession", ct);
+            return null;
+        }
 
         await using var stream = await resp.Content.ReadAsStreamAsync(ct);
         return await JsonSerializer.DeserializeAsync(
@@ -111,6 +128,8 @@ internal sealed class AgentTapeUploadSessionApiClient(HttpClient http)
         msg.Headers.Authorization = Bearer(bearerToken);
 
         using var resp = await http.SendAsync(msg, ct);
+        if (!resp.IsSuccessStatusCode && resp.StatusCode != HttpStatusCode.NoContent)
+            await LogFailureAsync(resp, "AbortSession", ct);
         return resp.IsSuccessStatusCode || resp.StatusCode == HttpStatusCode.NoContent;
     }
 
@@ -130,7 +149,27 @@ internal sealed class AgentTapeUploadSessionApiClient(HttpClient http)
         msg.Headers.Authorization = Bearer(bearerToken);
 
         using var resp = await http.SendAsync(msg, ct);
+        if (!resp.IsSuccessStatusCode && resp.StatusCode != HttpStatusCode.NoContent)
+            await LogFailureAsync(resp, "ReportFailed", ct);
         return resp.IsSuccessStatusCode || resp.StatusCode == HttpStatusCode.NoContent;
+    }
+
+    private async Task LogFailureAsync(HttpResponseMessage resp, string operation, CancellationToken ct)
+    {
+        if (logger is null) return;
+        string body;
+        try
+        {
+            var raw = await resp.Content.ReadAsStringAsync(ct);
+            body = raw.Length > 512 ? raw[..512] + "…" : raw;
+        }
+        catch
+        {
+            body = "(unreadable)";
+        }
+        logger.LogWarning(
+            "{Operation} failed: HTTP {StatusCode} — {Body}",
+            operation, (int)resp.StatusCode, body);
     }
 
     private static System.Net.Http.Headers.AuthenticationHeaderValue Bearer(string token) =>

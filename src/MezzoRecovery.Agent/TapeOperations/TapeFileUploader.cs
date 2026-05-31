@@ -255,7 +255,7 @@ public sealed class TapeFileUploader(
             agentId:              _agentId,
             clientSecret:         _clientSecret!,
             apiClient:            new AgentApiClient(new HttpClient { Timeout = TimeSpan.FromSeconds(30) }),
-            sessionClient:        new AgentTapeUploadSessionApiClient(new HttpClient { Timeout = TimeSpan.FromSeconds(30) }),
+            sessionClient:        new AgentTapeUploadSessionApiClient(new HttpClient { Timeout = TimeSpan.FromSeconds(30) }, loggerFactory.CreateLogger<AgentTapeUploadSessionApiClient>()),
             checkpointStore:      new TapeUploadCheckpointStore(
                                       _cacheDirectory,
                                       loggerFactory.CreateLogger<TapeUploadCheckpointStore>()),

@@ -62,8 +62,8 @@ internal sealed class TapeMultipartFileUploader(
         if (session is null)
         {
             logger.LogError(
-                "Failed to start upload session for file {FileId} run {RunId}.",
-                workItem.FileId, workItem.RunId);
+                "Failed to start upload session for file {FileId} run {RunId} path {FilePath}.",
+                workItem.FileId, workItem.RunId, workItem.FilePath);
             return;
         }
 

@@ -186,6 +186,7 @@ public sealed class AgentTapePreflightResultDto
 // ── Commands received from server ─────────────────────────────────────────────
 [JsonSerializable(typeof(StartTapeRunCommand))]
 [JsonSerializable(typeof(CancelTapeRunCommand))]
+[JsonSerializable(typeof(CancelTapeRunUploadsCommand))]
 [JsonSerializable(typeof(ExecuteTapeMediaActionCommand))]
 [JsonSerializable(typeof(AgentConfigCommand))]
 [JsonSerializable(typeof(RefreshTapeDeviceCommand))]

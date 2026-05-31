@@ -23,6 +23,9 @@ public sealed record StartTapeRunCommand(
 public sealed record CancelTapeRunCommand(
     [property: JsonPropertyName("runId")] Guid RunId);
 
+public sealed record CancelTapeRunUploadsCommand(
+    [property: JsonPropertyName("runId")] Guid RunId);
+
 public sealed record StopTapeRunReadingCommand(
     [property: JsonPropertyName("runId")] Guid RunId);
 

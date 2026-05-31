@@ -32,6 +32,9 @@ public sealed class TapeFileUploader(ILogger<TapeFileUploader> logger)
             SingleWriter = false,
         });
 
+    private readonly HashSet<Guid> _cancelledRunIds = [];
+    private readonly object _cancelLock = new();
+
     private volatile HubConnection? _hub;
 
     // Initialised once by AgentConnectionLoop after credentials are loaded.
@@ -47,6 +50,12 @@ public sealed class TapeFileUploader(ILogger<TapeFileUploader> logger)
     }
 
     public void SetHub(HubConnection hub) => _hub = hub;
+
+    public void CancelRunUploads(Guid runId)
+    {
+        lock (_cancelLock) _cancelledRunIds.Add(runId);
+        logger.LogInformation("Upload cancellation registered for run {RunId}.", runId);
+    }
 
     public void Enqueue(WorkItem item)
     {
@@ -70,6 +79,16 @@ public sealed class TapeFileUploader(ILogger<TapeFileUploader> logger)
         {
             await foreach (var item in _queue.Reader.ReadAllAsync(ct))
             {
+                bool cancelled;
+                lock (_cancelLock) cancelled = _cancelledRunIds.Contains(item.RunId);
+                if (cancelled)
+                {
+                    logger.LogInformation(
+                        "Upload skipped for file {FileId}: run {RunId} was cancelled.",
+                        item.FileId, item.RunId);
+                    continue;
+                }
+
                 logger.LogInformation(
                     "Upload dequeued for file {FileId} (run {RunId}).",
                     item.FileId, item.RunId);

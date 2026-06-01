@@ -55,7 +55,9 @@ public sealed record UpdateTapeDeviceReadSettingsCommand(
     [property: JsonPropertyName("readBufferSizeBytes")] int ReadBufferSizeBytes);
 
 public sealed record AgentConfigCommand(
-    [property: JsonPropertyName("tapeCacheDirectory")] string? TapeCacheDirectory);
+    [property: JsonPropertyName("tapeCacheDirectory")] string? TapeCacheDirectory,
+    [property: JsonPropertyName("maxConcurrentFileUploads")] int? MaxConcurrentFileUploads = null,
+    [property: JsonPropertyName("maxConcurrentPartsPerFile")] int? MaxConcurrentPartsPerFile = null);
 
 // ── Active-operation snapshot (Agent → API) ───────────────────────────────────
 

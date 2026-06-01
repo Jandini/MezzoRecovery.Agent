@@ -157,6 +157,7 @@ public sealed class AgentConnectionLoop(
                     _tapeCacheDirectory = string.IsNullOrEmpty(cmd.TapeCacheDirectory)
                         ? AgentPaths.DefaultCacheDirectory
                         : cmd.TapeCacheDirectory;
+                    fileUploader.UpdateConcurrency(cmd.MaxConcurrentFileUploads, cmd.MaxConcurrentPartsPerFile);
                     await ReportCacheStatusAsync(hub, CancellationToken.None);
                 });
 

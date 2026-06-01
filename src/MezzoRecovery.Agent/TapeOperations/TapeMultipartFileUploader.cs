@@ -24,10 +24,10 @@ internal sealed class TapeMultipartFileUploader(
     TapeUploadCheckpointStore checkpointStore,
     SemaphoreSlim globalPartSemaphore,
     HttpClient partUploadHttpClient,
-    ILogger<TapeMultipartFileUploader> logger)
+    ILogger<TapeMultipartFileUploader> logger,
+    int maxConcurrentPartsPerFile = 4)
 {
     private const int MaxPartRetries = 10;
-    private const int MaxConcurrentPartsPerFile = 4;
     private static readonly TimeSpan StallTimeout = TimeSpan.FromSeconds(120);
 
     // ── Progress tracking ─────────────────────────────────────────────────────
@@ -177,7 +177,7 @@ internal sealed class TapeMultipartFileUploader(
                 "Uploading {Missing}/{Total} missing parts for file {FileId}.",
                 missingParts.Count, totalParts, workItem.FileId);
 
-            var perFileSemaphore = new SemaphoreSlim(MaxConcurrentPartsPerFile);
+            var perFileSemaphore = new SemaphoreSlim(maxConcurrentPartsPerFile);
             var partTasks = missingParts
                 .Select(partNumber => UploadPartWithRetryAsync(
                     workItem, session, partNumber, checkpoint, allCompleted,

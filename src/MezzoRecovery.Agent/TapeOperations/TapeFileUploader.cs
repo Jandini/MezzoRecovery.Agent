@@ -24,8 +24,9 @@ namespace MezzoRecovery.Agent.TapeOperations;
 public sealed class TapeFileUploader(
     ILogger<TapeFileUploader> logger,
     ILoggerFactory loggerFactory,
-    int maxConcurrentFileUploads = 2,
-    int maxGlobalPartUploads = 8)
+    int maxConcurrentFileUploads = 1,
+    int maxGlobalPartUploads = 4,
+    int maxConcurrentPartsPerFile = 4)
 {
     // ── Work item (mirrors legacy shape for AgentConnectionLoop compatibility) ──
 
@@ -46,8 +47,10 @@ public sealed class TapeFileUploader(
             SingleWriter = false,
         });
 
-    private readonly SemaphoreSlim _fileUploadSemaphore = new(maxConcurrentFileUploads, maxConcurrentFileUploads);
-    private readonly SemaphoreSlim _globalPartSemaphore = new(maxGlobalPartUploads, maxGlobalPartUploads);
+    // Replaced atomically by UpdateConcurrency; captured before WaitAsync so Release pairs with the correct instance.
+    private volatile SemaphoreSlim _fileUploadSemaphore = new(maxConcurrentFileUploads, maxConcurrentFileUploads);
+    private volatile SemaphoreSlim _globalPartSemaphore = new(maxGlobalPartUploads, maxGlobalPartUploads);
+    private volatile int _maxConcurrentPartsPerFile = maxConcurrentPartsPerFile;
 
     private readonly ConcurrentDictionary<Guid, byte> _pausedRunIds    = new();
     private readonly ConcurrentDictionary<Guid, byte> _cancelledRunIds = new();
@@ -93,6 +96,26 @@ public sealed class TapeFileUploader(
     {
         _pausedRunIds.TryRemove(runId, out _);
         logger.LogInformation("Upload resumed for run {RunId}.", runId);
+    }
+
+    /// <summary>
+    /// Applies new concurrency limits at runtime. Takes effect for uploads that start after this call.
+    /// In-flight uploads continue against the semaphore instances they originally acquired.
+    /// </summary>
+    public void UpdateConcurrency(int? maxConcurrentFileUploads, int? maxConcurrentPartsPerFile)
+    {
+        if (maxConcurrentPartsPerFile is { } parts and > 0)
+            _maxConcurrentPartsPerFile = parts;
+
+        if (maxConcurrentFileUploads is { } files and > 0)
+        {
+            var partsPerFile = _maxConcurrentPartsPerFile;
+            _fileUploadSemaphore = new SemaphoreSlim(files, files);
+            _globalPartSemaphore = new SemaphoreSlim(files * partsPerFile, files * partsPerFile);
+            logger.LogInformation(
+                "Upload concurrency updated: {MaxFiles} file(s), {MaxParts} parts/file.",
+                files, partsPerFile);
+        }
     }
 
     public void Enqueue(WorkItem item)
@@ -153,13 +176,15 @@ public sealed class TapeFileUploader(
                 // Prune completed tasks.
                 activeTasks.RemoveAll(t => t.IsCompleted);
 
-                // Block until a file upload slot is available.
-                await _fileUploadSemaphore.WaitAsync(ct);
+                // Capture the current semaphore before acquiring — UpdateConcurrency may replace
+                // the field while we hold a slot; we must release exactly what we acquired.
+                var fileSlot = _fileUploadSemaphore;
+                await fileSlot.WaitAsync(ct);
 
                 var uploader = CreateUploader();
                 _activeUploaders.TryAdd(item.FileId, uploader);
 
-                var uploadTask = RunUploadAsync(uploader, item, ct);
+                var uploadTask = RunUploadAsync(uploader, item, fileSlot, ct);
                 activeTasks.Add(uploadTask);
             }
 
@@ -179,7 +204,7 @@ public sealed class TapeFileUploader(
     }
 
     private async Task RunUploadAsync(
-        TapeMultipartFileUploader uploader, WorkItem item, CancellationToken ct)
+        TapeMultipartFileUploader uploader, WorkItem item, SemaphoreSlim fileSlot, CancellationToken ct)
     {
         uploader.OnPartCompleted = async (uploaded, throughput) =>
         {
@@ -212,7 +237,7 @@ public sealed class TapeFileUploader(
         finally
         {
             _activeUploaders.TryRemove(item.FileId, out _);
-            _fileUploadSemaphore.Release();
+            fileSlot.Release();
         }
     }
 
@@ -271,16 +296,17 @@ public sealed class TapeFileUploader(
     private TapeMultipartFileUploader CreateUploader()
     {
         return new TapeMultipartFileUploader(
-            baseUri:              _baseUri!,
-            agentId:              _agentId,
-            clientSecret:         _clientSecret!,
-            apiClient:            new AgentApiClient(new HttpClient { Timeout = TimeSpan.FromSeconds(30) }),
-            sessionClient:        new AgentTapeUploadSessionApiClient(new HttpClient { Timeout = TimeSpan.FromSeconds(30) }, loggerFactory.CreateLogger<AgentTapeUploadSessionApiClient>()),
-            checkpointStore:      new TapeUploadCheckpointStore(
-                                      _cacheDirectory,
-                                      loggerFactory.CreateLogger<TapeUploadCheckpointStore>()),
-            globalPartSemaphore:  _globalPartSemaphore,
-            partUploadHttpClient: new HttpClient { Timeout = TimeSpan.FromMinutes(30) },
-            logger:               loggerFactory.CreateLogger<TapeMultipartFileUploader>());
+            baseUri:                    _baseUri!,
+            agentId:                    _agentId,
+            clientSecret:               _clientSecret!,
+            apiClient:                  new AgentApiClient(new HttpClient { Timeout = TimeSpan.FromSeconds(30) }),
+            sessionClient:              new AgentTapeUploadSessionApiClient(new HttpClient { Timeout = TimeSpan.FromSeconds(30) }, loggerFactory.CreateLogger<AgentTapeUploadSessionApiClient>()),
+            checkpointStore:            new TapeUploadCheckpointStore(
+                                            _cacheDirectory,
+                                            loggerFactory.CreateLogger<TapeUploadCheckpointStore>()),
+            globalPartSemaphore:        _globalPartSemaphore,
+            partUploadHttpClient:       new HttpClient { Timeout = TimeSpan.FromMinutes(30) },
+            logger:                     loggerFactory.CreateLogger<TapeMultipartFileUploader>(),
+            maxConcurrentPartsPerFile:  _maxConcurrentPartsPerFile);
     }
 }

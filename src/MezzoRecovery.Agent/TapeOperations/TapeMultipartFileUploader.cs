@@ -49,6 +49,22 @@ internal sealed class TapeMultipartFileUploader(
     private long _totalBytes;
     private bool _done;
 
+    // ── Token cache ───────────────────────────────────────────────────────────
+
+    // Cached JWT so we don't issue a new token request after every part upload.
+    // Protected by double-checked locking via _tokenLock.
+    private string? _cachedToken;
+    private DateTimeOffset _tokenExpiresAt;
+    private static readonly TimeSpan TokenRefreshBuffer = TimeSpan.FromSeconds(60);
+    private readonly SemaphoreSlim _tokenLock = new(1, 1);
+
+    // ── Signed-URL cache ──────────────────────────────────────────────────────
+
+    // Pre-signed URLs are batch-obtained before the upload loop starts, eliminating
+    // one API round-trip per part while a concurrency slot is held.
+    // ConcurrentDictionary because multiple part tasks access it simultaneously.
+    private static readonly TimeSpan SignedUrlRefreshBuffer = TimeSpan.FromMinutes(5);
+
     // ── Public surface ────────────────────────────────────────────────────────
 
     public Guid FileId { get; private set; }
@@ -103,7 +119,8 @@ internal sealed class TapeMultipartFileUploader(
         RunId       = workItem.RunId;
         _totalBytes = workItem.FileSizeBytes;
 
-        var token = await GetTokenAsync(ct);
+        // Seeds the token cache so the first part cycle doesn't need to fetch a token.
+        var token = await GetOrRefreshTokenAsync(ct);
         if (token is null)
         {
             logger.LogError("Could not obtain API token for upload of file {FileId}.", workItem.FileId);
@@ -177,11 +194,15 @@ internal sealed class TapeMultipartFileUploader(
                 "Uploading {Missing}/{Total} missing parts for file {FileId}.",
                 missingParts.Count, totalParts, workItem.FileId);
 
+            // Batch-sign all missing parts in a single API call before starting concurrent
+            // uploads, eliminating per-part sign latency while a concurrency slot is held.
+            var signedUrlCache = await BatchSignPartsAsync(session, workItem, missingParts, ct);
+
             var perFileSemaphore = new SemaphoreSlim(maxConcurrentPartsPerFile);
             var partTasks = missingParts
                 .Select(partNumber => UploadPartWithRetryAsync(
                     workItem, session, partNumber, checkpoint, allCompleted,
-                    perFileSemaphore, token, ct))
+                    signedUrlCache, perFileSemaphore, ct))
                 .ToList();
 
             await Task.WhenAll(partTasks);
@@ -197,7 +218,8 @@ internal sealed class TapeMultipartFileUploader(
 
         // ── Complete session ──────────────────────────────────────────────────
 
-        var result = await sessionClient.CompleteSessionAsync(baseUri, token, session.UploadSessionId, ct);
+        var finalToken = await GetOrRefreshTokenAsync(ct) ?? token;
+        var result = await sessionClient.CompleteSessionAsync(baseUri, finalToken, session.UploadSessionId, ct);
         if (result is not null)
         {
             logger.LogInformation(
@@ -213,6 +235,83 @@ internal sealed class TapeMultipartFileUploader(
         _done = true;
     }
 
+    // ── Batch-sign all missing parts upfront ──────────────────────────────────
+
+    private async Task<ConcurrentDictionary<int, SignedPartDto>> BatchSignPartsAsync(
+        StartUploadSessionApiResponse session,
+        UploadWorkItem workItem,
+        List<int> partNumbers,
+        CancellationToken ct)
+    {
+        var cache = new ConcurrentDictionary<int, SignedPartDto>();
+
+        var currentToken = await GetOrRefreshTokenAsync(ct);
+        if (currentToken is null) return cache;
+
+        var partsToSign = partNumbers
+            .Select(pn =>
+            {
+                var offset = (long)(pn - 1) * session.PartSizeBytes;
+                var length = Math.Min(session.PartSizeBytes, workItem.FileSizeBytes - offset);
+                return new PartToSignDto(pn, offset, length);
+            })
+            .ToArray();
+
+        var signResp = await sessionClient.SignPartsAsync(
+            baseUri, currentToken, session.UploadSessionId,
+            new SignPartsApiRequest(partsToSign),
+            ct);
+
+        if (signResp is null)
+        {
+            logger.LogWarning(
+                "Batch sign failed for session {SessionId}. Parts will be signed individually on demand.",
+                session.UploadSessionId);
+            return cache;
+        }
+
+        foreach (var part in signResp.Parts)
+            cache[part.PartNumber] = part;
+
+        logger.LogDebug(
+            "Batch-signed {Count} parts for file {FileId}.",
+            signResp.Parts.Length, workItem.FileId);
+
+        return cache;
+    }
+
+    // ── Get or refresh a signed URL for a part ────────────────────────────────
+
+    private async Task<SignedPartDto?> GetOrRefreshSignedUrlAsync(
+        Guid uploadSessionId,
+        int partNumber,
+        long offset,
+        long length,
+        ConcurrentDictionary<int, SignedPartDto> cache,
+        CancellationToken ct)
+    {
+        if (cache.TryGetValue(partNumber, out var cached) &&
+            cached.ExpiresAt - DateTimeOffset.UtcNow > SignedUrlRefreshBuffer)
+            return cached;
+
+        var currentToken = await GetOrRefreshTokenAsync(ct);
+        if (currentToken is null) return null;
+
+        var resp = await sessionClient.SignPartsAsync(
+            baseUri, currentToken, uploadSessionId,
+            new SignPartsApiRequest([new PartToSignDto(partNumber, offset, length)]),
+            ct);
+
+        if (resp is null || resp.Parts.Length == 0)
+        {
+            logger.LogWarning("Failed to sign part {Part} for session {SessionId}.", partNumber, uploadSessionId);
+            return null;
+        }
+
+        cache[partNumber] = resp.Parts[0];
+        return resp.Parts[0];
+    }
+
     // ── Part upload ───────────────────────────────────────────────────────────
 
     private async Task UploadPartWithRetryAsync(
@@ -221,14 +320,17 @@ internal sealed class TapeMultipartFileUploader(
         int partNumber,
         UploadCheckpoint checkpoint,
         Dictionary<int, string> allCompleted,
+        ConcurrentDictionary<int, SignedPartDto> signedUrlCache,
         SemaphoreSlim perFileSemaphore,
-        string token,
         CancellationToken ct)
     {
         await perFileSemaphore.WaitAsync(ct);
         await globalPartSemaphore.WaitAsync(ct);
         try
         {
+            var offset = (long)(partNumber - 1) * session.PartSizeBytes;
+            var length = Math.Min(session.PartSizeBytes, workItem.FileSizeBytes - offset);
+
             for (int attempt = 1; attempt <= MaxPartRetries; attempt++)
             {
                 ct.ThrowIfCancellationRequested();
@@ -246,13 +348,36 @@ internal sealed class TapeMultipartFileUploader(
                     Interlocked.Add(ref _bytesInCurrentInterval, n);
                 }
 
+                // Resolve signed URL before each attempt. Uses the batch-signed cache;
+                // re-signs on-demand only if the cached URL is near expiry or missing.
+                var signedPart = await GetOrRefreshSignedUrlAsync(
+                    session.UploadSessionId, partNumber, offset, length, signedUrlCache, ct);
+
+                if (signedPart is null)
+                {
+                    _partAttemptBytes[partNumber] = 0;
+                    if (attempt < MaxPartRetries)
+                    {
+                        var delay = TimeSpan.FromSeconds(Math.Min(300, Math.Pow(2, attempt)));
+                        logger.LogWarning(
+                            "Part {Part} of file {FileId}: could not obtain signed URL on attempt {Attempt}/{Max}. Retrying in {Delay}s.",
+                            partNumber, workItem.FileId, attempt, MaxPartRetries, delay.TotalSeconds);
+                        await Task.Delay(delay, ct);
+                    }
+                    continue;
+                }
+
                 try
                 {
                     var partStartMs = Environment.TickCount64;
-                    var etag = await UploadPartOnceAsync(workItem, session, partNumber, token, OnBytes, ct);
+                    var etag = await UploadPartOnceAsync(
+                        workItem, partNumber, offset, length, signedPart.UploadUrl, OnBytes, ct);
+
                     if (etag is null)
                     {
                         _partAttemptBytes[partNumber] = 0;
+                        // Evict the cached URL on PUT failure — a 403 may mean the URL expired.
+                        signedUrlCache.TryRemove(partNumber, out _);
                         if (attempt < MaxPartRetries)
                         {
                             var delay = TimeSpan.FromSeconds(Math.Min(300, Math.Pow(2, attempt)));
@@ -266,12 +391,9 @@ internal sealed class TapeMultipartFileUploader(
 
                     // ── Part succeeded ────────────────────────────────────────
 
-                    var offset = (long)(partNumber - 1) * session.PartSizeBytes;
-                    var length = Math.Min(session.PartSizeBytes, workItem.FileSizeBytes - offset);
-                    var currentToken = await GetTokenAsync(ct) ?? token;
-
+                    var currentToken = await GetOrRefreshTokenAsync(ct);
                     await sessionClient.CompletePartAsync(
-                        baseUri, currentToken, session.UploadSessionId, partNumber,
+                        baseUri, currentToken ?? string.Empty, session.UploadSessionId, partNumber,
                         new CompletePartApiRequest(etag, length), ct);
 
                     // Move bytes from in-flight → completed.
@@ -333,28 +455,13 @@ internal sealed class TapeMultipartFileUploader(
 
     private async Task<string?> UploadPartOnceAsync(
         UploadWorkItem workItem,
-        StartUploadSessionApiResponse session,
         int partNumber,
-        string token,
+        long offset,
+        long length,
+        string uploadUrl,
         Action<int> onBytesRead,
         CancellationToken ct)
     {
-        var offset = (long)(partNumber - 1) * session.PartSizeBytes;
-        var length = Math.Min(session.PartSizeBytes, workItem.FileSizeBytes - offset);
-
-        var signResp = await sessionClient.SignPartsAsync(
-            baseUri, token, session.UploadSessionId,
-            new SignPartsApiRequest([new PartToSignDto(partNumber, offset, length)]),
-            ct);
-
-        if (signResp is null || signResp.Parts.Length == 0)
-        {
-            logger.LogWarning("Failed to sign part {Part} for file {FileId}.", partNumber, workItem.FileId);
-            return null;
-        }
-
-        var signedPart = signResp.Parts[0];
-
         await using var fs = new FileStream(
             workItem.FilePath, FileMode.Open, FileAccess.Read, FileShare.Read,
             bufferSize: 65536, options: FileOptions.Asynchronous | FileOptions.SequentialScan);
@@ -367,7 +474,7 @@ internal sealed class TapeMultipartFileUploader(
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         cts.CancelAfter(StallTimeout + TimeSpan.FromSeconds(length / (1024 * 1024) * 10));
 
-        var request = new HttpRequestMessage(HttpMethod.Put, signedPart.UploadUrl);
+        var request = new HttpRequestMessage(HttpMethod.Put, uploadUrl);
         request.Content = new StreamContent(progress);
         request.Content.Headers.ContentLength = length;
         request.Content.Headers.ContentType   = new MediaTypeHeaderValue("application/octet-stream");
@@ -415,10 +522,32 @@ internal sealed class TapeMultipartFileUploader(
         }
     }
 
-    private async Task<string?> GetTokenAsync(CancellationToken ct)
+    // ── Token refresh (cached with double-checked locking) ────────────────────
+
+    private async Task<string?> GetOrRefreshTokenAsync(CancellationToken ct)
     {
-        var resp = await apiClient.GetTokenAsync(baseUri, new TokenApiRequest(agentId, clientSecret), ct);
-        return resp?.AccessToken;
+        // Fast path: cached token is still valid.
+        if (_cachedToken is { } t && DateTimeOffset.UtcNow < _tokenExpiresAt - TokenRefreshBuffer)
+            return t;
+
+        await _tokenLock.WaitAsync(ct);
+        try
+        {
+            // Re-check after acquiring the lock — another task may have refreshed already.
+            if (_cachedToken is { } t2 && DateTimeOffset.UtcNow < _tokenExpiresAt - TokenRefreshBuffer)
+                return t2;
+
+            var resp = await apiClient.GetTokenAsync(baseUri, new TokenApiRequest(agentId, clientSecret), ct);
+            if (resp is null) return null;
+
+            _cachedToken    = resp.AccessToken;
+            _tokenExpiresAt = DateTimeOffset.UtcNow.AddSeconds(resp.ExpiresInSeconds);
+            return _cachedToken;
+        }
+        finally
+        {
+            _tokenLock.Release();
+        }
     }
 }
 

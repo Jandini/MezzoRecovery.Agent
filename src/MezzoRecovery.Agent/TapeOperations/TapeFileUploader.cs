@@ -86,6 +86,12 @@ public sealed class TapeFileUploader(
         logger.LogInformation("Upload cancellation registered for run {RunId}.", runId);
     }
 
+    public void ResumeRunUploads(Guid runId)
+    {
+        _cancelledRunIds.TryRemove(runId, out _);
+        logger.LogInformation("Upload cancellation cleared for run {RunId}.", runId);
+    }
+
     public void PauseRunUpload(Guid runId)
     {
         _pausedRunIds.TryAdd(runId, 0);

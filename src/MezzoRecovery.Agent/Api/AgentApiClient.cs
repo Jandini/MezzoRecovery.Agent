@@ -36,10 +36,12 @@ public sealed class AgentApiClient(HttpClient http)
     }
 
     public async Task<PendingUploadItem[]?> GetPendingUploadsAsync(
-        Uri baseUri, string bearerToken, CancellationToken ct)
+        Uri baseUri, string bearerToken, CancellationToken ct, Guid? runId = null)
     {
-        using var msg = new HttpRequestMessage(HttpMethod.Get,
-            new Uri(baseUri, "api/agent/tape/uploads/pending"));
+        var url = runId.HasValue
+            ? $"api/agent/tape/uploads/pending?runId={runId:D}"
+            : "api/agent/tape/uploads/pending";
+        using var msg = new HttpRequestMessage(HttpMethod.Get, new Uri(baseUri, url));
         msg.Headers.Authorization =
             new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", bearerToken);
         using var resp = await http.SendAsync(msg, ct);

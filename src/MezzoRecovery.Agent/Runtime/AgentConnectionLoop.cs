@@ -237,6 +237,13 @@ public sealed class AgentConnectionLoop(
                     return Task.CompletedTask;
                 });
 
+                hub.On<ResumeRunUploadsCommand>("ResumeRunUploads", async command =>
+                {
+                    _logger.LogInformation("ResumeRunUploads received for run {RunId}.", command.RunId);
+                    fileUploader.ResumeRunUploads(command.RunId);
+                    await ResumePendingUploadsAsync(baseUri, cred, ct, runId: command.RunId);
+                });
+
                 hub.On<PauseTapeRunUploadCommand>("PauseTapeRunUpload", command =>
                 {
                     _logger.LogInformation("PauseTapeRunUpload received for run {RunId}.", command.RunId);
@@ -486,7 +493,7 @@ public sealed class AgentConnectionLoop(
     /// .tic file still exists. Called on initial connect and every reconnect so
     /// orphaned uploads (from a crashed run or broken network window) are recovered.
     /// </summary>
-    private async Task ResumePendingUploadsAsync(Uri baseUri, AgentCredentialFile cred, CancellationToken ct)
+    private async Task ResumePendingUploadsAsync(Uri baseUri, AgentCredentialFile cred, CancellationToken ct, Guid? runId = null)
     {
         try
         {
@@ -500,7 +507,7 @@ public sealed class AgentConnectionLoop(
                 return;
             }
 
-            var pending = await api.GetPendingUploadsAsync(baseUri, token.AccessToken, ct);
+            var pending = await api.GetPendingUploadsAsync(baseUri, token.AccessToken, ct, runId);
             if (pending is null || pending.Length == 0)
                 return;
 

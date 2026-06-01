@@ -229,8 +229,10 @@ public sealed class TapeFileUploader(
 
     // ── Progress publisher ────────────────────────────────────────────────────
 
-    // Heartbeat: sends current byte counts every second so the API can update BytesUploaded
-    // even between part completions. Throughput comes from the per-part callback above.
+    // Heartbeat: fires every second. Calls ComputeThroughputSnapshot() on each uploader
+    // (consumes the interval byte accumulator and computes EWMA rate), then sends the
+    // current byte position and speed to the API. The OnPartCompleted callback handles
+    // immediate pushes on each part completion; this covers in-between progress.
     private async Task PublishProgressAsync(CancellationToken ct)
     {
         try
@@ -248,12 +250,13 @@ public sealed class TapeFileUploader(
 
                     try
                     {
+                        var throughput = uploader.ComputeThroughputSnapshot();
                         await hub.SendAsync("ReportTapeFileUploadProgress",
                             new TapeFileUploadProgressReport(
                                 FileId: fileId,
                                 BytesUploaded: uploader.GetUploadedBytes(),
                                 TotalBytes: uploader.GetTotalBytes(),
-                                ThroughputBytesPerSecond: uploader.GetLastThroughputBytesPerSecond()),
+                                ThroughputBytesPerSecond: throughput),
                             ct);
                     }
                     catch { /* best-effort */ }

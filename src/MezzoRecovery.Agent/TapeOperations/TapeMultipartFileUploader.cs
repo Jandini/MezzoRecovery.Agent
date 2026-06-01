@@ -1,6 +1,7 @@
 using MezzoRecovery.Agent.Api;
 using MezzoRecovery.Agent.Contracts;
 using Microsoft.Extensions.Logging;
+using System.Collections.Concurrent;
 using System.Net.Http.Headers;
 
 namespace MezzoRecovery.Agent.TapeOperations;
@@ -8,6 +9,11 @@ namespace MezzoRecovery.Agent.TapeOperations;
 /// <summary>
 /// Uploads a single .tic file to S3-compatible object storage using the multipart
 /// upload session API. Handles resume, part-level retry, and stall detection.
+///
+/// Progress model:
+///   GetUploadedBytes()   = completed-part bytes + bytes currently in-flight across all active part PUTs
+///   ComputeThroughputSnapshot() = interval-based EWMA throughput; call from heartbeat timer (~1 s)
+///   OnPartCompleted      = fires immediately when a part finishes, with per-part measured throughput
 /// </summary>
 internal sealed class TapeMultipartFileUploader(
     Uri baseUri,
@@ -24,34 +30,77 @@ internal sealed class TapeMultipartFileUploader(
     private const int MaxConcurrentPartsPerFile = 4;
     private static readonly TimeSpan StallTimeout = TimeSpan.FromSeconds(120);
 
-    private long _uploadedBytes;
+    // ── Progress tracking ─────────────────────────────────────────────────────
+
+    // Bytes from fully completed parts.
+    private long _completedBytes;
+
+    // Bytes uploaded in the CURRENT attempt for each in-flight part.
+    // Key = partNumber (1-based). Reset to 0 at the start of each retry attempt.
+    private readonly ConcurrentDictionary<int, long> _partAttemptBytes = new();
+
+    // Accumulates bytes from ProgressStream callbacks between heartbeat snapshots.
+    private long _bytesInCurrentInterval;
+    private long _lastIntervalTickMs = Environment.TickCount64;
+
+    // EWMA-smoothed throughput in bytes/second. Written only by ComputeThroughputSnapshot.
+    private long _smoothedThroughput;
+
     private long _totalBytes;
-    private long _lastThroughputBytesPerSecond;
     private bool _done;
 
-    public long GetUploadedBytes() => Interlocked.Read(ref _uploadedBytes);
-    public long GetTotalBytes() => _totalBytes;
-    public long? GetLastThroughputBytesPerSecond()
-    {
-        var v = Interlocked.Read(ref _lastThroughputBytesPerSecond);
-        return v > 0 ? v : null;
-    }
+    // ── Public surface ────────────────────────────────────────────────────────
+
     public Guid FileId { get; private set; }
-    public Guid RunId { get; private set; }
+    public Guid RunId  { get; private set; }
     public bool IsDone => _done;
 
     /// <summary>
-    /// Called immediately after a part upload completes. Args: (bytesUploaded, throughputBytesPerSecond).
-    /// Set before calling UploadAsync. Fire-and-forget semantics — exceptions are swallowed by the caller.
+    /// Bytes uploaded so far: completed parts plus bytes actively streaming through open PUT requests.
+    /// Safe to call from any thread.
+    /// </summary>
+    public long GetUploadedBytes()
+    {
+        var inFlight = 0L;
+        foreach (var v in _partAttemptBytes.Values) inFlight += v;
+        return Interlocked.Read(ref _completedBytes) + inFlight;
+    }
+
+    public long GetTotalBytes() => _totalBytes;
+
+    /// <summary>
+    /// Computes current EWMA throughput from bytes accumulated since the last call.
+    /// Must be called by ONE thread only (the heartbeat timer). Returns null when
+    /// no data has flowed recently.
+    /// </summary>
+    public long? ComputeThroughputSnapshot()
+    {
+        var now        = Environment.TickCount64;
+        var elapsedMs  = Math.Max(100L, now - _lastIntervalTickMs);
+        _lastIntervalTickMs = now;
+
+        var bytes       = Interlocked.Exchange(ref _bytesInCurrentInterval, 0);
+        var instantRate = bytes * 1000L / elapsedMs;
+
+        var smoothed = (long)(_smoothedThroughput * 0.7 + instantRate * 0.3);
+        _smoothedThroughput = smoothed;
+
+        return smoothed > 100 ? smoothed : null;
+    }
+
+    /// <summary>
+    /// Fired immediately after each part upload completes.
+    /// Args: (totalBytesUploaded, throughputBytesPerSecond).
+    /// Set before calling UploadAsync. Fire-and-forget — caller swallows exceptions.
     /// </summary>
     public Func<long, long, Task>? OnPartCompleted { get; set; }
 
-    public async Task UploadAsync(
-        UploadWorkItem workItem,
-        CancellationToken ct)
+    // ── Upload entry point ────────────────────────────────────────────────────
+
+    public async Task UploadAsync(UploadWorkItem workItem, CancellationToken ct)
     {
-        FileId = workItem.FileId;
-        RunId = workItem.RunId;
+        FileId      = workItem.FileId;
+        RunId       = workItem.RunId;
         _totalBytes = workItem.FileSizeBytes;
 
         var token = await GetTokenAsync(ct);
@@ -61,11 +110,10 @@ internal sealed class TapeMultipartFileUploader(
             return;
         }
 
-        // 1. Start or resume the upload session.
         var sessionReq = new StartUploadSessionApiRequest(
-            FileName: Path.GetFileName(workItem.FilePath),
-            TotalBytes: workItem.FileSizeBytes,
-            ContentType: "application/octet-stream",
+            FileName:              Path.GetFileName(workItem.FilePath),
+            TotalBytes:            workItem.FileSizeBytes,
+            ContentType:           "application/octet-stream",
             PreferredPartSizeBytes: 67_108_864L);
 
         var session = await sessionClient.StartOrResumeSessionAsync(
@@ -81,52 +129,41 @@ internal sealed class TapeMultipartFileUploader(
 
         logger.LogInformation(
             "Upload session {SessionId}: {TotalParts} parts of {PartSize} MB each for file {FileId}.",
-            session.UploadSessionId,
-            session.TotalParts,
-            session.PartSizeBytes / 1_048_576,
-            workItem.FileId);
+            session.UploadSessionId, session.TotalParts, session.PartSizeBytes / 1_048_576, workItem.FileId);
 
-        // 2. Reconcile local checkpoint with server completed parts.
+        // ── Reconcile checkpoint ──────────────────────────────────────────────
+
         var checkpoint = await checkpointStore.LoadAsync(workItem.RunId, workItem.FileId, ct)
                          ?? new UploadCheckpoint
                          {
-                             RunId = workItem.RunId,
-                             FileId = workItem.FileId,
+                             RunId           = workItem.RunId,
+                             FileId          = workItem.FileId,
                              UploadSessionId = session.UploadSessionId,
-                             FilePath = workItem.FilePath,
-                             FileName = Path.GetFileName(workItem.FilePath),
-                             FileSizeBytes = workItem.FileSizeBytes,
-                             PartSizeBytes = session.PartSizeBytes,
+                             FilePath        = workItem.FilePath,
+                             FileName        = Path.GetFileName(workItem.FilePath),
+                             FileSizeBytes   = workItem.FileSizeBytes,
+                             PartSizeBytes   = session.PartSizeBytes,
                          };
 
-        // Merge: server is authoritative for ETags.
-        var serverCompleted = session.CompletedParts
-            .ToDictionary(p => p.PartNumber, p => p.ETag);
+        var serverCompleted = session.CompletedParts.ToDictionary(p => p.PartNumber, p => p.ETag);
+        var localCompleted  = checkpoint.CompletedParts.ToDictionary(p => p.PartNumber, p => p.ETag);
 
-        var localCompleted = checkpoint.CompletedParts
-            .ToDictionary(p => p.PartNumber, p => p.ETag);
-
-        // Union (server wins for shared parts).
         var allCompleted = new Dictionary<int, string>(localCompleted);
         foreach (var (pn, etag) in serverCompleted)
             allCompleted[pn] = etag;
 
-        // Update checkpoint with merged state.
-        checkpoint.CompletedParts = allCompleted
-            .Select(kv => new CheckpointPartDto { PartNumber = kv.Key, ETag = kv.Value })
-            .ToArray();
-        checkpoint.UploadSessionId = session.UploadSessionId;
-        checkpoint.PartSizeBytes = session.PartSizeBytes;
+        checkpoint.CompletedParts   = allCompleted.Select(kv => new CheckpointPartDto { PartNumber = kv.Key, ETag = kv.Value }).ToArray();
+        checkpoint.UploadSessionId  = session.UploadSessionId;
+        checkpoint.PartSizeBytes    = session.PartSizeBytes;
 
-        // Count already-uploaded bytes for accurate progress reporting.
-        var completedBytes = (long)allCompleted.Count * session.PartSizeBytes;
-        Interlocked.Exchange(ref _uploadedBytes, Math.Min(completedBytes, workItem.FileSizeBytes));
+        // Seed _completedBytes from already-uploaded parts so GetUploadedBytes() is accurate from the start.
+        var seedBytes = (long)allCompleted.Count * session.PartSizeBytes;
+        Interlocked.Exchange(ref _completedBytes, Math.Min(seedBytes, workItem.FileSizeBytes));
 
-        // 3. Determine which parts are still missing.
-        var totalParts = session.TotalParts;
-        var missingParts = Enumerable.Range(1, totalParts)
-            .Where(p => !allCompleted.ContainsKey(p))
-            .ToList();
+        // ── Upload missing parts ──────────────────────────────────────────────
+
+        var totalParts   = session.TotalParts;
+        var missingParts = Enumerable.Range(1, totalParts).Where(p => !allCompleted.ContainsKey(p)).ToList();
 
         if (missingParts.Count == 0)
         {
@@ -140,7 +177,6 @@ internal sealed class TapeMultipartFileUploader(
                 "Uploading {Missing}/{Total} missing parts for file {FileId}.",
                 missingParts.Count, totalParts, workItem.FileId);
 
-            // 4. Upload missing parts in parallel.
             var perFileSemaphore = new SemaphoreSlim(MaxConcurrentPartsPerFile);
             var partTasks = missingParts
                 .Select(partNumber => UploadPartWithRetryAsync(
@@ -150,7 +186,6 @@ internal sealed class TapeMultipartFileUploader(
 
             await Task.WhenAll(partTasks);
 
-            // Verify all parts are now complete.
             if (allCompleted.Count != totalParts)
             {
                 logger.LogError(
@@ -160,10 +195,9 @@ internal sealed class TapeMultipartFileUploader(
             }
         }
 
-        // 5. Complete the session.
-        var result = await sessionClient.CompleteSessionAsync(
-            baseUri, token, session.UploadSessionId, ct);
+        // ── Complete session ──────────────────────────────────────────────────
 
+        var result = await sessionClient.CompleteSessionAsync(baseUri, token, session.UploadSessionId, ct);
         if (result is not null)
         {
             logger.LogInformation(
@@ -173,12 +207,13 @@ internal sealed class TapeMultipartFileUploader(
         }
         else
         {
-            logger.LogError(
-                "CompleteSession call failed for upload session {SessionId}.", session.UploadSessionId);
+            logger.LogError("CompleteSession call failed for upload session {SessionId}.", session.UploadSessionId);
         }
 
         _done = true;
     }
+
+    // ── Part upload ───────────────────────────────────────────────────────────
 
     private async Task UploadPartWithRetryAsync(
         UploadWorkItem workItem,
@@ -198,12 +233,26 @@ internal sealed class TapeMultipartFileUploader(
             {
                 ct.ThrowIfCancellationRequested();
 
+                // Reset in-flight counter for this attempt (covers retries too).
+                _partAttemptBytes[partNumber] = 0;
+                long attemptBytes = 0;
+
+                // Callback: called by ProgressStream on every network read.
+                // Updates per-part in-flight bytes and the interval accumulator.
+                void OnBytes(int n)
+                {
+                    attemptBytes += n;
+                    _partAttemptBytes[partNumber] = attemptBytes;
+                    Interlocked.Add(ref _bytesInCurrentInterval, n);
+                }
+
                 try
                 {
                     var partStartMs = Environment.TickCount64;
-                    var etag = await UploadPartOnceAsync(workItem, session, partNumber, token, ct);
+                    var etag = await UploadPartOnceAsync(workItem, session, partNumber, token, OnBytes, ct);
                     if (etag is null)
                     {
+                        _partAttemptBytes[partNumber] = 0;
                         if (attempt < MaxPartRetries)
                         {
                             var delay = TimeSpan.FromSeconds(Math.Min(300, Math.Pow(2, attempt)));
@@ -215,7 +264,8 @@ internal sealed class TapeMultipartFileUploader(
                         continue;
                     }
 
-                    // Report part completion to API.
+                    // ── Part succeeded ────────────────────────────────────────
+
                     var offset = (long)(partNumber - 1) * session.PartSizeBytes;
                     var length = Math.Min(session.PartSizeBytes, workItem.FileSizeBytes - offset);
                     var currentToken = await GetTokenAsync(ct) ?? token;
@@ -224,16 +274,20 @@ internal sealed class TapeMultipartFileUploader(
                         baseUri, currentToken, session.UploadSessionId, partNumber,
                         new CompletePartApiRequest(etag, length), ct);
 
-                    // Update local tracking.
-                    allCompleted[partNumber] = etag;
-                    Interlocked.Add(ref _uploadedBytes, length);
+                    // Move bytes from in-flight → completed.
+                    _partAttemptBytes.TryRemove(partNumber, out _);
+                    Interlocked.Add(ref _completedBytes, length);
 
-                    // Compute and store throughput from measured upload time.
-                    var elapsedSec = Math.Max(0.001, (Environment.TickCount64 - partStartMs) / 1000.0);
-                    var throughput = (long)(length / elapsedSec);
-                    Interlocked.Exchange(ref _lastThroughputBytesPerSecond, throughput);
+                    // Per-part throughput for the immediate push (excludes signing overhead
+                    // on large parts, which is negligible).
+                    var partElapsedSec = Math.Max(0.001, (Environment.TickCount64 - partStartMs) / 1000.0);
+                    var partThroughput = (long)(length / partElapsedSec);
+
+                    // Blend into the EWMA so the heartbeat starts from a good value.
+                    _smoothedThroughput = (long)(_smoothedThroughput * 0.7 + partThroughput * 0.3);
 
                     // Save checkpoint.
+                    allCompleted[partNumber] = etag;
                     checkpoint.CompletedParts = allCompleted
                         .Select(kv => new CheckpointPartDto { PartNumber = kv.Key, ETag = kv.Value })
                         .ToArray();
@@ -243,19 +297,21 @@ internal sealed class TapeMultipartFileUploader(
                         "Part {Part}/{Total} completed for file {FileId}. ETag: {ETag}",
                         partNumber, session.TotalParts, workItem.FileId, etag);
 
-                    // Notify uploader of part completion so it can push an immediate progress report.
+                    // Immediate progress push on part completion.
                     var callback = OnPartCompleted;
                     if (callback is not null)
-                        _ = Task.Run(() => callback(GetUploadedBytes(), throughput));
+                        _ = Task.Run(() => callback(GetUploadedBytes(), partThroughput));
 
                     return;
                 }
                 catch (OperationCanceledException)
                 {
+                    _partAttemptBytes.TryRemove(partNumber, out _);
                     throw;
                 }
                 catch (Exception ex)
                 {
+                    _partAttemptBytes[partNumber] = 0;
                     logger.LogWarning(ex,
                         "Part {Part} of file {FileId} threw on attempt {Attempt}/{Max}.",
                         partNumber, workItem.FileId, attempt, MaxPartRetries);
@@ -280,16 +336,15 @@ internal sealed class TapeMultipartFileUploader(
         StartUploadSessionApiResponse session,
         int partNumber,
         string token,
+        Action<int> onBytesRead,
         CancellationToken ct)
     {
-        // Request a signed URL for this part.
         var offset = (long)(partNumber - 1) * session.PartSizeBytes;
         var length = Math.Min(session.PartSizeBytes, workItem.FileSizeBytes - offset);
 
         var signResp = await sessionClient.SignPartsAsync(
             baseUri, token, session.UploadSessionId,
-            new SignPartsApiRequest(
-                [new PartToSignDto(partNumber, offset, length)]),
+            new SignPartsApiRequest([new PartToSignDto(partNumber, offset, length)]),
             ct);
 
         if (signResp is null || signResp.Parts.Length == 0)
@@ -300,26 +355,22 @@ internal sealed class TapeMultipartFileUploader(
 
         var signedPart = signResp.Parts[0];
 
-        // Open a read-only FileStream positioned at the part offset.
         await using var fs = new FileStream(
-            workItem.FilePath,
-            FileMode.Open, FileAccess.Read, FileShare.Read,
-            bufferSize: 65536,
-            options: FileOptions.Asynchronous | FileOptions.SequentialScan);
+            workItem.FilePath, FileMode.Open, FileAccess.Read, FileShare.Read,
+            bufferSize: 65536, options: FileOptions.Asynchronous | FileOptions.SequentialScan);
 
         fs.Seek(offset, SeekOrigin.Begin);
 
-        // Wrap to prevent reading beyond the part boundary.
-        using var bounded = new BoundedStream(fs, length);
+        // ProgressStream reports each read to the caller so in-flight bytes stay current.
+        using var progress = new ProgressStream(fs, length, onBytesRead);
 
-        // PUT to the signed URL with stall detection.
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         cts.CancelAfter(StallTimeout + TimeSpan.FromSeconds(length / (1024 * 1024) * 10));
 
         var request = new HttpRequestMessage(HttpMethod.Put, signedPart.UploadUrl);
-        request.Content = new StreamContent(bounded);
+        request.Content = new StreamContent(progress);
         request.Content.Headers.ContentLength = length;
-        request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+        request.Content.Headers.ContentType   = new MediaTypeHeaderValue("application/octet-stream");
 
         try
         {
@@ -344,12 +395,8 @@ internal sealed class TapeMultipartFileUploader(
                 return null;
             }
 
-            // ETag is returned by the storage provider in the response header.
             var etag = response.Headers.ETag?.Tag
-                       ?? (response.Headers.TryGetValues("ETag", out var vals)
-                           ? vals.FirstOrDefault()
-                           : null);
-
+                       ?? (response.Headers.TryGetValues("ETag", out var vals) ? vals.FirstOrDefault() : null);
             return etag;
         }
         catch (OperationCanceledException) when (cts.IsCancellationRequested && !ct.IsCancellationRequested)
@@ -361,7 +408,6 @@ internal sealed class TapeMultipartFileUploader(
         {
             logger.LogError(
                 "TLS handshake failed uploading part {Part} of file {FileId} to {Scheme}://{Host}. " +
-                "The storage endpoint is responding with non-TLS data. " +
                 "Verify that TapeObjectStorage:PublicEndpoint uses the correct scheme (http vs https).",
                 partNumber, workItem.FileId,
                 request.RequestUri?.Scheme, request.RequestUri?.Host);
@@ -371,11 +417,7 @@ internal sealed class TapeMultipartFileUploader(
 
     private async Task<string?> GetTokenAsync(CancellationToken ct)
     {
-        var resp = await apiClient.GetTokenAsync(
-            baseUri,
-            new TokenApiRequest(agentId, clientSecret),
-            ct);
-
+        var resp = await apiClient.GetTokenAsync(baseUri, new TokenApiRequest(agentId, clientSecret), ct);
         return resp?.AccessToken;
     }
 }
@@ -388,11 +430,14 @@ internal sealed record UploadWorkItem(
     long FileSizeBytes,
     Guid? ExistingUploadSessionId = null);
 
-/// <summary>Stream wrapper that prevents reads beyond a fixed byte count.</summary>
-internal sealed class BoundedStream(Stream inner, long length) : Stream
+/// <summary>
+/// Bounded stream that limits reads to <paramref name="length"/> bytes and reports
+/// each successful read to <paramref name="onBytesRead"/> for live progress tracking.
+/// </summary>
+internal sealed class ProgressStream(Stream inner, long length, Action<int>? onBytesRead = null) : Stream
 {
-    private readonly long _length = length;
-    private long _remaining = length;
+    private readonly long _length    = length;
+    private long          _remaining = length;
 
     public override bool CanRead  => true;
     public override bool CanSeek  => false;
@@ -403,27 +448,27 @@ internal sealed class BoundedStream(Stream inner, long length) : Stream
     public override int Read(byte[] buffer, int offset, int count)
     {
         if (_remaining <= 0) return 0;
-        var toRead = (int)Math.Min(count, _remaining);
+        var toRead    = (int)Math.Min(count, _remaining);
         var bytesRead = inner.Read(buffer, offset, toRead);
-        _remaining -= bytesRead;
+        if (bytesRead > 0) { _remaining -= bytesRead; onBytesRead?.Invoke(bytesRead); }
         return bytesRead;
     }
 
     public override async Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken ct)
     {
         if (_remaining <= 0) return 0;
-        var toRead = (int)Math.Min(count, _remaining);
+        var toRead    = (int)Math.Min(count, _remaining);
         var bytesRead = await inner.ReadAsync(buffer, offset, toRead, ct);
-        _remaining -= bytesRead;
+        if (bytesRead > 0) { _remaining -= bytesRead; onBytesRead?.Invoke(bytesRead); }
         return bytesRead;
     }
 
     public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default)
     {
         if (_remaining <= 0) return 0;
-        var toRead = (int)Math.Min(buffer.Length, _remaining);
+        var toRead    = (int)Math.Min(buffer.Length, _remaining);
         var bytesRead = await inner.ReadAsync(buffer[..toRead], ct);
-        _remaining -= bytesRead;
+        if (bytesRead > 0) { _remaining -= bytesRead; onBytesRead?.Invoke(bytesRead); }
         return bytesRead;
     }
 

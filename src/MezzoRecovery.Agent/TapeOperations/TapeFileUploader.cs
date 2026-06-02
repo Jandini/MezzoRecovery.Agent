@@ -68,7 +68,15 @@ public sealed class TapeFileUploader(
     private readonly HttpClient _apiHttpClient     = new() { Timeout = TimeSpan.FromSeconds(30) };
     private readonly HttpClient _sessionHttpClient = new() { Timeout = TimeSpan.FromSeconds(30) };
     // S3 part PUTs — 30-minute ceiling; the per-part stall watchdog always fires first.
-    private readonly HttpClient _partHttpClient    = new() { Timeout = TimeSpan.FromMinutes(30) };
+    // Keep-alive pings detect silent TCP hangs (e.g. firewall/NAT killing idle connections)
+    // within 15 s rather than waiting for the OS-level TCP timeout.
+    private readonly HttpClient _partHttpClient = new(new SocketsHttpHandler
+    {
+        KeepAlivePingPolicy  = HttpKeepAlivePingPolicy.Always,
+        KeepAlivePingDelay   = TimeSpan.FromSeconds(15),
+        KeepAlivePingTimeout = TimeSpan.FromSeconds(15),
+    })
+    { Timeout = TimeSpan.FromMinutes(30) };
 
     // ── Credentials + cache ───────────────────────────────────────────────────
 

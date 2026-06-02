@@ -363,13 +363,21 @@ internal sealed class TapeMultipartFileUploader(
                 _partAttemptBytes[partNumber] = 0;
                 long attemptBytes = 0;
 
+                // Sliding-window stall CTS: each byte arrival resets the deadline to StallTimeout
+                // from now, so a slow-but-active upload is never cancelled — only genuine silence
+                // (no bytes for StallTimeout) triggers the stall path.
+                using var stallCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                stallCts.CancelAfter(StallTimeout);
+
                 // Callback: called by ProgressStream on every network read.
-                // Updates per-part in-flight bytes and the interval accumulator.
+                // Updates per-part in-flight bytes, the interval accumulator, and extends
+                // the stall deadline so the timer only fires on true silence.
                 void OnBytes(int n)
                 {
                     attemptBytes += n;
                     _partAttemptBytes[partNumber] = attemptBytes;
                     Interlocked.Add(ref _bytesInCurrentInterval, n);
+                    stallCts.CancelAfter(StallTimeout);
                 }
 
                 // Resolve signed URL before each attempt. Uses the batch-signed cache;
@@ -395,7 +403,7 @@ internal sealed class TapeMultipartFileUploader(
                 {
                     var partStartMs = Environment.TickCount64;
                     var etag = await UploadPartOnceAsync(
-                        workItem, partNumber, offset, length, signedPart.UploadUrl, OnBytes, ct);
+                        workItem, partNumber, offset, length, signedPart.UploadUrl, OnBytes, stallCts.Token, ct);
 
                     if (etag is null)
                     {
@@ -480,6 +488,7 @@ internal sealed class TapeMultipartFileUploader(
         long length,
         string uploadUrl,
         Action<int> onBytesRead,
+        CancellationToken stallToken,
         CancellationToken ct)
     {
         await using var fs = new FileStream(
@@ -489,10 +498,9 @@ internal sealed class TapeMultipartFileUploader(
         fs.Seek(offset, SeekOrigin.Begin);
 
         // ProgressStream reports each read to the caller so in-flight bytes stay current.
+        // The caller's OnBytes callback also resets stallToken's deadline on every read,
+        // so the token only fires when no bytes have moved for StallTimeout.
         using var progress = new ProgressStream(fs, length, onBytesRead);
-
-        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        cts.CancelAfter(StallTimeout + TimeSpan.FromSeconds(length / (1024 * 1024) * 10));
 
         var request = new HttpRequestMessage(HttpMethod.Put, uploadUrl);
         request.Content = new StreamContent(progress);
@@ -502,11 +510,11 @@ internal sealed class TapeMultipartFileUploader(
         try
         {
             using var response = await partUploadHttpClient.SendAsync(
-                request, HttpCompletionOption.ResponseHeadersRead, cts.Token);
+                request, HttpCompletionOption.ResponseHeadersRead, stallToken);
 
             if (response.StatusCode == System.Net.HttpStatusCode.Forbidden)
             {
-                var body = await response.Content.ReadAsStringAsync(cts.Token);
+                var body = await response.Content.ReadAsStringAsync(stallToken);
                 logger.LogWarning(
                     "Part {Part} of file {FileId} PUT returned 403. MinIO error: {Body}",
                     partNumber, workItem.FileId, body);
@@ -515,7 +523,7 @@ internal sealed class TapeMultipartFileUploader(
 
             if (!response.IsSuccessStatusCode)
             {
-                var body = await response.Content.ReadAsStringAsync(cts.Token);
+                var body = await response.Content.ReadAsStringAsync(stallToken);
                 logger.LogWarning(
                     "Part {Part} of file {FileId} PUT returned {StatusCode}. Body: {Body}",
                     partNumber, workItem.FileId, (int)response.StatusCode, body);
@@ -531,7 +539,7 @@ internal sealed class TapeMultipartFileUploader(
                 : rawEtag;
             return etag;
         }
-        catch (OperationCanceledException) when (cts.IsCancellationRequested && !ct.IsCancellationRequested)
+        catch (OperationCanceledException) when (stallToken.IsCancellationRequested && !ct.IsCancellationRequested)
         {
             logger.LogWarning("Part {Part} upload stalled (no data for {Timeout}s).", partNumber, StallTimeout.TotalSeconds);
             return null;

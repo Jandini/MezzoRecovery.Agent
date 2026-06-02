@@ -26,7 +26,7 @@ public sealed class TapeFileUploader(
     ILoggerFactory loggerFactory,
     int maxConcurrentFileUploads = 1,
     int maxGlobalPartUploads = 4,
-    int maxConcurrentPartsPerFile = 4)
+    int maxConcurrentPartsPerFile = 4) : IDisposable
 {
     // ── Work item (mirrors legacy shape for AgentConnectionLoop compatibility) ──
 
@@ -55,6 +55,19 @@ public sealed class TapeFileUploader(
     private readonly ConcurrentDictionary<Guid, byte> _pausedRunIds    = new();
     private readonly ConcurrentDictionary<Guid, byte> _cancelledRunIds = new();
     private readonly ConcurrentDictionary<Guid, TapeMultipartFileUploader> _activeUploaders = new();
+
+    // ── Shared HTTP clients (one set per process — HttpClient is designed for reuse) ──
+    //
+    // Creating a new HttpClient per file upload leaks sockets and defeats connection pooling.
+    // These three instances are shared across all concurrent file uploads for their lifetime.
+    //
+    // loggerFactory is a primary-constructor parameter; it is in scope for field initializers.
+
+    // Control-plane API calls: token, session lifecycle, part completion reports.
+    private readonly HttpClient _apiHttpClient     = new() { Timeout = TimeSpan.FromSeconds(30) };
+    private readonly HttpClient _sessionHttpClient = new() { Timeout = TimeSpan.FromSeconds(30) };
+    // S3 part PUTs — 30-minute ceiling; the per-part stall watchdog always fires first.
+    private readonly HttpClient _partHttpClient    = new() { Timeout = TimeSpan.FromMinutes(30) };
 
     // ── Credentials + cache ───────────────────────────────────────────────────
 
@@ -212,23 +225,6 @@ public sealed class TapeFileUploader(
     private async Task RunUploadAsync(
         TapeMultipartFileUploader uploader, WorkItem item, SemaphoreSlim fileSlot, CancellationToken ct)
     {
-        uploader.OnPartCompleted = async (uploaded, throughput) =>
-        {
-            var hub = _hub;
-            if (hub is null) return;
-            try
-            {
-                await hub.SendAsync("ReportTapeFileUploadProgress",
-                    new TapeFileUploadProgressReport(
-                        FileId: item.FileId,
-                        BytesUploaded: uploaded,
-                        TotalBytes: item.FileSizeBytes,
-                        ThroughputBytesPerSecond: throughput),
-                    CancellationToken.None);
-            }
-            catch { }
-        };
-
         try
         {
             await uploader.UploadAsync(
@@ -260,10 +256,10 @@ public sealed class TapeFileUploader(
 
     // ── Progress publisher ────────────────────────────────────────────────────
 
-    // Heartbeat: fires every second. Calls ComputeThroughputSnapshot() on each uploader
-    // (consumes the interval byte accumulator and computes EWMA rate), then sends the
-    // current byte position and speed to the API. The OnPartCompleted callback handles
-    // immediate pushes on each part completion; this covers in-between progress.
+    // Heartbeat: fires every second. Calls ComputeThroughputSnapshot() on each active uploader
+    // (consumes the interval byte accumulator and computes EWMA rate), then sends the current
+    // byte position and speed to the API. This is the sole progress reporting path — there is
+    // no per-part immediate push, which keeps all hub calls observable and cancellation-safe.
     private async Task PublishProgressAsync(CancellationToken ct)
     {
         try
@@ -301,18 +297,31 @@ public sealed class TapeFileUploader(
 
     private TapeMultipartFileUploader CreateUploader()
     {
+        // API client wrappers are lightweight (stateless method dispatchers); creating one
+        // per file is fine. The underlying HttpClient instances are shared across all uploads.
         return new TapeMultipartFileUploader(
-            baseUri:                    _baseUri!,
-            agentId:                    _agentId,
-            clientSecret:               _clientSecret!,
-            apiClient:                  new AgentApiClient(new HttpClient { Timeout = TimeSpan.FromSeconds(30) }),
-            sessionClient:              new AgentTapeUploadSessionApiClient(new HttpClient { Timeout = TimeSpan.FromSeconds(30) }, loggerFactory.CreateLogger<AgentTapeUploadSessionApiClient>()),
-            checkpointStore:            new TapeUploadCheckpointStore(
-                                            _cacheDirectory,
-                                            loggerFactory.CreateLogger<TapeUploadCheckpointStore>()),
-            globalPartSemaphore:        _globalPartSemaphore,
-            partUploadHttpClient:       new HttpClient { Timeout = TimeSpan.FromMinutes(30) },
-            logger:                     loggerFactory.CreateLogger<TapeMultipartFileUploader>(),
-            maxConcurrentPartsPerFile:  _maxConcurrentPartsPerFile);
+            baseUri:                   _baseUri!,
+            agentId:                   _agentId,
+            clientSecret:              _clientSecret!,
+            apiClient:                 new AgentApiClient(_apiHttpClient),
+            sessionClient:             new AgentTapeUploadSessionApiClient(
+                                           _sessionHttpClient,
+                                           loggerFactory.CreateLogger<AgentTapeUploadSessionApiClient>()),
+            checkpointStore:           new TapeUploadCheckpointStore(
+                                           _cacheDirectory,
+                                           loggerFactory.CreateLogger<TapeUploadCheckpointStore>()),
+            globalPartSemaphore:       _globalPartSemaphore,
+            partUploadHttpClient:      _partHttpClient,
+            logger:                    loggerFactory.CreateLogger<TapeMultipartFileUploader>(),
+            maxConcurrentPartsPerFile: _maxConcurrentPartsPerFile);
+    }
+
+    // ── Disposal ──────────────────────────────────────────────────────────────
+
+    public void Dispose()
+    {
+        _apiHttpClient.Dispose();
+        _sessionHttpClient.Dispose();
+        _partHttpClient.Dispose();
     }
 }

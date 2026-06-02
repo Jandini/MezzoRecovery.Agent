@@ -41,8 +41,9 @@ public sealed class TapeFileHasher(
 
     /// <summary>
     /// Starts the background consumer. Called once from the DI-composed run loop.
+    /// Returns the consumer task directly so the caller can observe faults without Task.Run indirection.
     /// </summary>
-    public Task StartAsync(CancellationToken ct) => Task.Run(() => ConsumeAsync(ct), ct);
+    public Task StartAsync(CancellationToken ct) => ConsumeAsync(ct);
 
     // ── Consumer ───────────────────────────────────────────────────────────────
 

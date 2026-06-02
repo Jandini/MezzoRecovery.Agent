@@ -11,9 +11,11 @@ namespace MezzoRecovery.Agent.TapeOperations;
 /// upload session API. Handles resume, part-level retry, and stall detection.
 ///
 /// Progress model:
-///   GetUploadedBytes()   = completed-part bytes + bytes currently in-flight across all active part PUTs
+///   GetUploadedBytes()          = completed-part bytes + bytes currently in-flight across all active part PUTs
 ///   ComputeThroughputSnapshot() = interval-based EWMA throughput; call from heartbeat timer (~1 s)
-///   OnPartCompleted      = fires immediately when a part finishes, with per-part measured throughput
+///
+/// Progress is published solely by the scheduler's 1 Hz heartbeat loop — no fire-and-forget
+/// callbacks are used so that all hub calls remain observable and cancellable.
 /// </summary>
 internal sealed class TapeMultipartFileUploader(
     Uri baseUri,
@@ -103,13 +105,6 @@ internal sealed class TapeMultipartFileUploader(
 
         return smoothed > 100 ? smoothed : null;
     }
-
-    /// <summary>
-    /// Fired immediately after each part upload completes.
-    /// Args: (totalBytesUploaded, throughputBytesPerSecond).
-    /// Set before calling UploadAsync. Fire-and-forget — caller swallows exceptions.
-    /// </summary>
-    public Func<long, long, Task>? OnPartCompleted { get; set; }
 
     // ── Upload entry point ────────────────────────────────────────────────────
 
@@ -418,11 +413,6 @@ internal sealed class TapeMultipartFileUploader(
                     logger.LogDebug(
                         "Part {Part}/{Total} completed for file {FileId}. ETag: {ETag}",
                         partNumber, session.TotalParts, workItem.FileId, etag);
-
-                    // Immediate progress push on part completion.
-                    var callback = OnPartCompleted;
-                    if (callback is not null)
-                        _ = Task.Run(() => callback(GetUploadedBytes(), partThroughput));
 
                     return;
                 }

@@ -45,7 +45,8 @@ internal sealed class TapeMultipartFileUploader(
     private long _bytesInCurrentInterval;
     private long _lastIntervalTickMs = Environment.TickCount64;
 
-    // EWMA-smoothed throughput in bytes/second. Written only by ComputeThroughputSnapshot.
+    // EWMA-smoothed throughput in bytes/second.
+    // Written from part tasks and the heartbeat thread; use Interlocked for memory-fence correctness.
     private long _smoothedThroughput;
 
     private long _totalBytes;
@@ -100,8 +101,8 @@ internal sealed class TapeMultipartFileUploader(
         var bytes       = Interlocked.Exchange(ref _bytesInCurrentInterval, 0);
         var instantRate = bytes * 1000L / elapsedMs;
 
-        var smoothed = (long)(_smoothedThroughput * 0.7 + instantRate * 0.3);
-        _smoothedThroughput = smoothed;
+        var smoothed = (long)(Interlocked.Read(ref _smoothedThroughput) * 0.7 + instantRate * 0.3);
+        Interlocked.Exchange(ref _smoothedThroughput, smoothed);
 
         return smoothed > 100 ? smoothed : null;
     }
@@ -381,7 +382,7 @@ internal sealed class TapeMultipartFileUploader(
                     _partAttemptBytes[partNumber] = 0;
                     if (attempt < MaxPartRetries)
                     {
-                        var delay = TimeSpan.FromSeconds(Math.Min(300, Math.Pow(2, attempt)));
+                        var delay = TimeSpan.FromSeconds(Math.Min(300, Math.Pow(2, attempt)) * (0.8 + Random.Shared.NextDouble() * 0.4));
                         logger.LogWarning(
                             "Part {Part} of file {FileId}: could not obtain signed URL on attempt {Attempt}/{Max}. Retrying in {Delay}s.",
                             partNumber, workItem.FileId, attempt, MaxPartRetries, delay.TotalSeconds);
@@ -403,7 +404,7 @@ internal sealed class TapeMultipartFileUploader(
                         signedUrlCache.TryRemove(partNumber, out _);
                         if (attempt < MaxPartRetries)
                         {
-                            var delay = TimeSpan.FromSeconds(Math.Min(300, Math.Pow(2, attempt)));
+                            var delay = TimeSpan.FromSeconds(Math.Min(300, Math.Pow(2, attempt)) * (0.8 + Random.Shared.NextDouble() * 0.4));
                             logger.LogWarning(
                                 "Part {Part} of file {FileId} failed attempt {Attempt}/{Max}. Retrying in {Delay}s.",
                                 partNumber, workItem.FileId, attempt, MaxPartRetries, delay.TotalSeconds);
@@ -429,7 +430,8 @@ internal sealed class TapeMultipartFileUploader(
                     var partThroughput = (long)(length / partElapsedSec);
 
                     // Blend into the EWMA so the heartbeat starts from a good value.
-                    _smoothedThroughput = (long)(_smoothedThroughput * 0.7 + partThroughput * 0.3);
+                    Interlocked.Exchange(ref _smoothedThroughput,
+                        (long)(Interlocked.Read(ref _smoothedThroughput) * 0.7 + partThroughput * 0.3));
 
                     // Save checkpoint.
                     allCompleted[partNumber] = etag;
@@ -459,7 +461,7 @@ internal sealed class TapeMultipartFileUploader(
                     if (attempt >= MaxPartRetries)
                         throw;
 
-                    var delay = TimeSpan.FromSeconds(Math.Min(300, Math.Pow(2, attempt)));
+                    var delay = TimeSpan.FromSeconds(Math.Min(300, Math.Pow(2, attempt)) * (0.8 + Random.Shared.NextDouble() * 0.4));
                     await Task.Delay(delay, ct);
                 }
             }

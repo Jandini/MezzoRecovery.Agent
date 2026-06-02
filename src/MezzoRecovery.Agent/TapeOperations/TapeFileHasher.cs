@@ -103,7 +103,7 @@ public sealed class TapeFileHasher(
         logger.LogInformation(
             "Forwarding file {FileId} to uploader (hash {HashStatus}).",
             item.FileId, hashHex is not null ? "ok" : "failed");
-        uploader.Enqueue(new TapeFileUploader.WorkItem(
+        await uploader.Enqueue(new TapeFileUploader.WorkItem(
             FileId:           item.FileId,
             RunId:            item.RunId,
             FilePath:         item.FilePath,

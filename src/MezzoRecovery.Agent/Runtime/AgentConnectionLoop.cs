@@ -547,7 +547,7 @@ public sealed class AgentConnectionLoop(
                     continue;
                 }
 
-                fileUploader.Enqueue(new TapeFileUploader.WorkItem(
+                await fileUploader.Enqueue(new TapeFileUploader.WorkItem(
                     FileId:                    item.FileId,
                     RunId:                     item.RunId,
                     FilePath:                  localPath,

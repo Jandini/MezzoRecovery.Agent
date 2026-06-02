@@ -41,10 +41,11 @@ public sealed class TapeFileUploader(
     // ── Scheduling state ──────────────────────────────────────────────────────
 
     private readonly Channel<WorkItem> _queue =
-        Channel.CreateUnbounded<WorkItem>(new UnboundedChannelOptions
+        Channel.CreateBounded<WorkItem>(new BoundedChannelOptions(1000)
         {
             SingleReader = true,
             SingleWriter = false,
+            FullMode     = BoundedChannelFullMode.Wait,
         });
 
     // Replaced atomically by UpdateConcurrency; captured before WaitAsync so Release pairs with the correct instance.
@@ -144,12 +145,12 @@ public sealed class TapeFileUploader(
     /// </summary>
     public bool IsActivelyUploading(Guid fileId) => _activeUploaders.ContainsKey(fileId);
 
-    public void Enqueue(WorkItem item)
+    public async ValueTask Enqueue(WorkItem item, CancellationToken ct = default)
     {
         logger.LogInformation(
             "Upload enqueued for file {FileId} (run {RunId}, {Bytes} bytes).",
             item.FileId, item.RunId, item.FileSizeBytes);
-        _queue.Writer.TryWrite(item);
+        await _queue.Writer.WriteAsync(item, ct);
     }
 
     /// <summary>
@@ -268,7 +269,7 @@ public sealed class TapeFileUploader(
         {
             await Task.Delay(delay, ct);
             if (!_cancelledRunIds.ContainsKey(item.RunId))
-                _queue.Writer.TryWrite(item);
+                await _queue.Writer.WriteAsync(item, ct);
         }
         catch (OperationCanceledException) { }
     }

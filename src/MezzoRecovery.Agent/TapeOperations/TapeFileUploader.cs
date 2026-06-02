@@ -137,6 +137,13 @@ public sealed class TapeFileUploader(
         }
     }
 
+    /// <summary>
+    /// Returns true when a file is currently being uploaded (slot acquired and task running).
+    /// Use as a cheap early-out before Enqueue to cut queue churn on reconnect — not as the
+    /// sole race guard (the scheduler's TryAdd is the authoritative duplicate check).
+    /// </summary>
+    public bool IsActivelyUploading(Guid fileId) => _activeUploaders.ContainsKey(fileId);
+
     public void Enqueue(WorkItem item)
     {
         logger.LogInformation(
@@ -179,8 +186,8 @@ public sealed class TapeFileUploader(
                     logger.LogDebug(
                         "Upload deferred (paused run {RunId}) for file {FileId}. Re-enqueuing.",
                         item.RunId, item.FileId);
-                    // Re-enqueue after a short delay so the scheduler can process other runs.
-                    _ = ReEnqueueAfterDelayAsync(item, TimeSpan.FromSeconds(5), ct);
+                    // Track the re-enqueue task so it is awaited at shutdown and faults are observable.
+                    activeTasks.Add(ReEnqueueAfterDelayAsync(item, TimeSpan.FromSeconds(5), ct));
                     continue;
                 }
 
@@ -201,7 +208,19 @@ public sealed class TapeFileUploader(
                 await fileSlot.WaitAsync(ct);
 
                 var uploader = CreateUploader();
-                _activeUploaders.TryAdd(item.FileId, uploader);
+
+                // Authoritative duplicate guard: TryAdd is atomic and runs on the single-reader
+                // loop thread, so it is the only place that needs to enforce the invariant.
+                // A duplicate can arrive if SignalR reconnects while a file is in the channel
+                // queue (IsActivelyUploading returns false for queued-but-not-yet-started files).
+                if (!_activeUploaders.TryAdd(item.FileId, uploader))
+                {
+                    logger.LogDebug(
+                        "Upload skipped for file {FileId}: already active (duplicate from reconnect).",
+                        item.FileId);
+                    fileSlot.Release();
+                    continue;
+                }
 
                 var uploadTask = RunUploadAsync(uploader, item, fileSlot, ct);
                 activeTasks.Add(uploadTask);

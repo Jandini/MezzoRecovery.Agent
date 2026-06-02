@@ -536,6 +536,17 @@ public sealed class AgentConnectionLoop(
                     continue;
                 }
 
+                // Early-out: skip items already in an active upload slot.
+                // The scheduler's TryAdd is the authoritative duplicate guard, but avoiding
+                // unnecessary queue entries reduces churn when reconnects arrive mid-upload.
+                if (fileUploader.IsActivelyUploading(item.FileId))
+                {
+                    _logger.LogDebug(
+                        "ResumePendingUploads: file {FileId} already uploading; skipping re-enqueue.",
+                        item.FileId);
+                    continue;
+                }
+
                 fileUploader.Enqueue(new TapeFileUploader.WorkItem(
                     FileId:                    item.FileId,
                     RunId:                     item.RunId,

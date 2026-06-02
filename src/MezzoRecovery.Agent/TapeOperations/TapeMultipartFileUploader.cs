@@ -200,12 +200,40 @@ internal sealed class TapeMultipartFileUploader(
                     signedUrlCache, perFileSemaphore, ct))
                 .ToList();
 
-            await Task.WhenAll(partTasks);
+            try
+            {
+                await Task.WhenAll(partTasks);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                var failedCount = partTasks.Count(t => t.IsFaulted);
+                logger.LogError(ex,
+                    "Upload failed: {Failed}/{Total} part task(s) faulted for file {FileId}.",
+                    failedCount, partTasks.Count, workItem.FileId);
 
+                // Tell the server so the record shows Failed instead of staying Uploading.
+                var reportToken = await GetOrRefreshTokenAsync(CancellationToken.None);
+                if (reportToken is not null)
+                {
+                    await sessionClient.ReportFailedAsync(
+                        baseUri, reportToken, session.UploadSessionId,
+                        new FailUploadApiRequest("PartUploadFailed", ex.Message),
+                        CancellationToken.None);
+                }
+                return;
+            }
+
+            // Defensive check: all part tasks completed without throwing but allCompleted
+            // is short — indicates a logic bug rather than a transient failure.
             if (allCompleted.Count != totalParts)
             {
                 logger.LogError(
-                    "Upload incomplete: {Completed}/{Total} parts for file {FileId}.",
+                    "Upload incomplete after WhenAll: {Completed}/{Total} parts for file {FileId}. " +
+                    "This is a bug — some part tasks succeeded without recording completion.",
                     allCompleted.Count, totalParts, workItem.FileId);
                 return;
             }
@@ -492,8 +520,13 @@ internal sealed class TapeMultipartFileUploader(
                 return null;
             }
 
-            var etag = response.Headers.ETag?.Tag
-                       ?? (response.Headers.TryGetValues("ETag", out var vals) ? vals.FirstOrDefault() : null);
+            var rawEtag = response.Headers.ETag?.Tag
+                          ?? (response.Headers.TryGetValues("ETag", out var vals) ? vals.FirstOrDefault() : null);
+            // S3 CompleteMultipartUpload requires quoted ETags (e.g. "\"abc123\"").
+            // Some S3-compatible providers return the value without surrounding quotes; normalise here.
+            var etag = rawEtag is not null && !rawEtag.StartsWith('"')
+                ? $"\"{rawEtag}\""
+                : rawEtag;
             return etag;
         }
         catch (OperationCanceledException) when (cts.IsCancellationRequested && !ct.IsCancellationRequested)

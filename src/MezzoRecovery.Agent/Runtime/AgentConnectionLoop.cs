@@ -339,6 +339,22 @@ public sealed class AgentConnectionLoop(
             {
                 break;
             }
+            catch (AgentAuthException ex)
+            {
+                // 401 from the token endpoint means credentials are invalid/revoked — not a transient
+                // network error. Jump immediately to max backoff so a misconfigured agent does not
+                // hammer the token endpoint every 2–4 seconds on every process restart.
+                failureBackoff = TimeSpan.FromSeconds(maxFailureBackoffSeconds);
+                _logger.LogError(ex, "Agent authentication rejected. Backing off {Delay}. Stop the agent and re-enroll to fix.", failureBackoff);
+                try
+                {
+                    await Task.Delay(failureBackoff, ct);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+            }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Agent run loop error; backing off {Delay}.", failureBackoff);

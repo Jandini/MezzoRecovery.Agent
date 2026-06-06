@@ -495,7 +495,7 @@ public sealed class AgentConnectionLoop(
             while (!ct.IsCancellationRequested)
             {
                 await Task.Delay(interval, ct);
-                await reportPublisher.PublishFullDiscoveryAsync(connection, ct);
+                await reportPublisher.PublishFullDiscoveryAsync(connection, ct, suppressIfUnchanged: true);
             }
         }
         catch (OperationCanceledException)

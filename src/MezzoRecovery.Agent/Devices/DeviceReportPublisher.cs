@@ -19,12 +19,13 @@ public sealed class DeviceReportPublisher(
     DeviceDiscoveryOptions discoveryOptions,
     ILogger<DeviceReportPublisher> logger)
 {
+    private volatile string? _lastPublishedFingerprint;
     /// <summary>
     /// Runs a full discovery sweep (slow, opens devices, refreshes everything),
     /// stores the result, and reports it to the API. Skips probing devices that
     /// currently have an active operation so the sweep never disturbs a read.
     /// </summary>
-    public async Task PublishFullDiscoveryAsync(HubConnection hub, CancellationToken ct)
+    public async Task PublishFullDiscoveryAsync(HubConnection hub, CancellationToken ct, bool suppressIfUnchanged = false)
     {
         if (!discoveryOptions.Enabled)
             return;
@@ -47,6 +48,15 @@ public sealed class DeviceReportPublisher(
 
             // Re-snapshot in case Observe mutated MediaStatus.
             var publish = store.Snapshot();
+
+            var fingerprint = ComputeWireFingerprint(publish);
+            if (suppressIfUnchanged && fingerprint == _lastPublishedFingerprint)
+            {
+                logger.LogDebug("Device discovery: {Count} device(s), no change since last report.", publish.Count);
+                return;
+            }
+
+            _lastPublishedFingerprint = fingerprint;
             await hub.InvokeAsync("ReportTapeDevices", publish.Select(MapToWire).ToArray(), ct);
             logger.LogInformation("Reported {Count} tape device(s) (full discovery).", publish.Count);
         }
@@ -63,6 +73,14 @@ public sealed class DeviceReportPublisher(
             }
         }
     }
+
+    private static string ComputeWireFingerprint(IReadOnlyList<AgentTapeDeviceDto> devices) =>
+        string.Join(";", devices
+            .OrderBy(d => d.StableDeviceKey, StringComparer.Ordinal)
+            .Select(d =>
+                $"{d.StableDeviceKey}|{MapDeviceStatusToWire(d.Status)}|{MapMediaStatusToWire(d.MediaStatus)}" +
+                $"|{d.IsPresent}|{d.IsAccessible}|{d.MtStatusLabels}|{d.Vendor}|{d.Model}|{d.SerialNumber}" +
+                $"|{d.ReadBlockSizeBytes}|{d.ReadBufferSizeBytes}"));
 
     /// <summary>
     /// Sends the current cached state to the API without re-running discovery.

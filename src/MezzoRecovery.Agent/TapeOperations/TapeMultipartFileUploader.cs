@@ -161,6 +161,12 @@ internal sealed class TapeMultipartFileUploader(
                              PartSizeBytes   = session.PartSizeBytes,
                          };
 
+        // Discard stale part ETags when the S3 session changed (e.g. after stop+resume).
+        // Old ETags are invalid for the new session — merging them would make the agent
+        // think all parts are done and call CompleteMultipartUpload with wrong ETags.
+        if (checkpoint.UploadSessionId != session.UploadSessionId)
+            checkpoint.CompletedParts = [];
+
         var serverCompleted = session.CompletedParts.ToDictionary(p => p.PartNumber, p => p.ETag);
         var localCompleted  = checkpoint.CompletedParts.ToDictionary(p => p.PartNumber, p => p.ETag);
 

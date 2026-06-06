@@ -4,14 +4,105 @@ namespace MezzoRecovery.Agent.Contracts;
 
 /// <summary>
 /// Returned by <c>GET api/agent/tape/uploads/pending</c>. Carries enough
-/// information for the agent to reconstruct the local .tic path and re-enqueue
-/// an orphaned upload after a restart or reconnect.
+/// information for the agent to reconstruct the local .tic path and resume or
+/// re-enqueue an orphaned multipart upload after a restart or reconnect.
 /// </summary>
 public sealed record PendingUploadItem(
-    [property: JsonPropertyName("fileId")]        Guid FileId,
-    [property: JsonPropertyName("runId")]         Guid RunId,
-    [property: JsonPropertyName("tapeFileNumber")] int  TapeFileNumber,
-    [property: JsonPropertyName("totalBytes")]    long TotalBytes);
+    [property: JsonPropertyName("fileId")]         Guid                      FileId,
+    [property: JsonPropertyName("runId")]          Guid                      RunId,
+    [property: JsonPropertyName("tapeFileNumber")] int                       TapeFileNumber,
+    [property: JsonPropertyName("totalBytes")]     long                      TotalBytes,
+    [property: JsonPropertyName("uploadSessionId")] Guid?                    UploadSessionId = null,
+    [property: JsonPropertyName("uploadStatus")]   string?                   UploadStatus    = null,
+    [property: JsonPropertyName("isPaused")]       bool                      IsPaused        = false,
+    [property: JsonPropertyName("completedParts")] CompletedPartItemDto[]?   CompletedParts  = null);
+
+// ── Upload session API DTOs ───────────────────────────────────────────────────
+
+public sealed record CompletedPartItemDto(
+    [property: JsonPropertyName("partNumber")]     int     PartNumber,
+    [property: JsonPropertyName("offsetBytes")]    long    OffsetBytes,
+    [property: JsonPropertyName("lengthBytes")]    long    LengthBytes,
+    [property: JsonPropertyName("etag")]           string  ETag,
+    [property: JsonPropertyName("checksumSha256")] string? ChecksumSha256);
+
+public sealed record StartUploadSessionApiRequest(
+    [property: JsonPropertyName("fileName")]              string  FileName,
+    [property: JsonPropertyName("totalBytes")]            long    TotalBytes,
+    [property: JsonPropertyName("contentType")]           string  ContentType,
+    [property: JsonPropertyName("preferredPartSizeBytes")] long   PreferredPartSizeBytes,
+    [property: JsonPropertyName("fileSha256")]            string? FileSha256 = null);
+
+public sealed record StartUploadSessionApiResponse(
+    [property: JsonPropertyName("uploadSessionId")] Guid                    UploadSessionId,
+    [property: JsonPropertyName("runId")]           Guid                    RunId,
+    [property: JsonPropertyName("fileId")]          Guid                    FileId,
+    [property: JsonPropertyName("status")]          string                  Status,
+    [property: JsonPropertyName("storageProvider")] string                  StorageProvider,
+    [property: JsonPropertyName("bucketName")]      string                  BucketName,
+    [property: JsonPropertyName("objectKey")]       string                  ObjectKey,
+    [property: JsonPropertyName("partSizeBytes")]   long                    PartSizeBytes,
+    [property: JsonPropertyName("totalBytes")]      long                    TotalBytes,
+    [property: JsonPropertyName("totalParts")]      int                     TotalParts,
+    [property: JsonPropertyName("uploadedBytes")]   long                    UploadedBytes,
+    [property: JsonPropertyName("completedParts")]  CompletedPartItemDto[]  CompletedParts,
+    [property: JsonPropertyName("expiresAt")]       DateTimeOffset?         ExpiresAt);
+
+public sealed record SignPartsApiRequest(
+    [property: JsonPropertyName("parts")] PartToSignDto[] Parts);
+
+public sealed record PartToSignDto(
+    [property: JsonPropertyName("partNumber")]  int  PartNumber,
+    [property: JsonPropertyName("offsetBytes")] long OffsetBytes,
+    [property: JsonPropertyName("lengthBytes")] long LengthBytes);
+
+public sealed record SignPartsApiResponse(
+    [property: JsonPropertyName("parts")] SignedPartDto[] Parts);
+
+public sealed record SignedPartDto(
+    [property: JsonPropertyName("partNumber")]  int            PartNumber,
+    [property: JsonPropertyName("offsetBytes")] long           OffsetBytes,
+    [property: JsonPropertyName("lengthBytes")] long           LengthBytes,
+    [property: JsonPropertyName("uploadUrl")]   string         UploadUrl,
+    [property: JsonPropertyName("expiresAt")]   DateTimeOffset ExpiresAt);
+
+public sealed record CompletePartApiRequest(
+    [property: JsonPropertyName("etag")]           string  ETag,
+    [property: JsonPropertyName("sizeBytes")]       long    SizeBytes,
+    [property: JsonPropertyName("checksumSha256")]  string? ChecksumSha256 = null);
+
+public sealed record CompleteUploadApiResponse(
+    [property: JsonPropertyName("remotePath")]      string RemotePath,
+    [property: JsonPropertyName("storageProvider")] string StorageProvider,
+    [property: JsonPropertyName("bucketName")]      string BucketName,
+    [property: JsonPropertyName("objectKey")]       string ObjectKey,
+    [property: JsonPropertyName("totalBytes")]      long   TotalBytes);
+
+public sealed record FailUploadApiRequest(
+    [property: JsonPropertyName("failureReason")]  string FailureReason,
+    [property: JsonPropertyName("failureMessage")] string FailureMessage);
+
+// ── Local upload checkpoint (written to disk for restart recovery) ────────────
+
+public sealed class UploadCheckpoint
+{
+    [JsonPropertyName("runId")]          public Guid                RunId           { get; set; }
+    [JsonPropertyName("fileId")]         public Guid                FileId          { get; set; }
+    [JsonPropertyName("uploadSessionId")] public Guid               UploadSessionId { get; set; }
+    [JsonPropertyName("filePath")]       public string              FilePath        { get; set; } = string.Empty;
+    [JsonPropertyName("fileName")]       public string              FileName        { get; set; } = string.Empty;
+    [JsonPropertyName("fileSizeBytes")]  public long                FileSizeBytes   { get; set; }
+    [JsonPropertyName("partSizeBytes")]  public long                PartSizeBytes   { get; set; }
+    [JsonPropertyName("completedParts")] public CheckpointPartDto[] CompletedParts  { get; set; } = [];
+    [JsonPropertyName("updatedAtUtc")]   public DateTimeOffset      UpdatedAtUtc    { get; set; }
+}
+
+public sealed class CheckpointPartDto
+{
+    [JsonPropertyName("partNumber")]    public int     PartNumber    { get; set; }
+    [JsonPropertyName("etag")]          public string  ETag          { get; set; } = string.Empty;
+    [JsonPropertyName("checksumSha256")] public string? ChecksumSha256 { get; set; }
+}
 
 public sealed record EnrollApiRequest(
     [property: JsonPropertyName("enrollmentCode")] string EnrollmentCode,
@@ -172,6 +263,22 @@ public sealed class AgentTapePreflightResultDto
 [JsonSerializable(typeof(string))]
 [JsonSerializable(typeof(PendingUploadItem))]
 [JsonSerializable(typeof(PendingUploadItem[]))]
+[JsonSerializable(typeof(CompletedPartItemDto))]
+[JsonSerializable(typeof(CompletedPartItemDto[]))]
+[JsonSerializable(typeof(StartUploadSessionApiRequest))]
+[JsonSerializable(typeof(StartUploadSessionApiResponse))]
+[JsonSerializable(typeof(SignPartsApiRequest))]
+[JsonSerializable(typeof(PartToSignDto))]
+[JsonSerializable(typeof(PartToSignDto[]))]
+[JsonSerializable(typeof(SignPartsApiResponse))]
+[JsonSerializable(typeof(SignedPartDto))]
+[JsonSerializable(typeof(SignedPartDto[]))]
+[JsonSerializable(typeof(CompletePartApiRequest))]
+[JsonSerializable(typeof(CompleteUploadApiResponse))]
+[JsonSerializable(typeof(FailUploadApiRequest))]
+[JsonSerializable(typeof(UploadCheckpoint))]
+[JsonSerializable(typeof(CheckpointPartDto))]
+[JsonSerializable(typeof(CheckpointPartDto[]))]
 [JsonSerializable(typeof(EnrollApiRequest))]
 [JsonSerializable(typeof(EnrollApiResponse))]
 [JsonSerializable(typeof(TokenApiRequest))]
@@ -187,6 +294,9 @@ public sealed class AgentTapePreflightResultDto
 [JsonSerializable(typeof(StartTapeRunCommand))]
 [JsonSerializable(typeof(CancelTapeRunCommand))]
 [JsonSerializable(typeof(CancelTapeRunUploadsCommand))]
+[JsonSerializable(typeof(PauseTapeRunUploadCommand))]
+[JsonSerializable(typeof(ResumeTapeRunUploadCommand))]
+[JsonSerializable(typeof(ResumeRunUploadsCommand))]
 [JsonSerializable(typeof(StopTapeRunReadingCommand))]
 [JsonSerializable(typeof(ExecuteTapeMediaActionCommand))]
 [JsonSerializable(typeof(AgentConfigCommand))]

@@ -4,6 +4,9 @@ using MezzoRecovery.Agent.Contracts;
 
 namespace MezzoRecovery.Agent.Api;
 
+/// <summary>Thrown when the API rejects agent credentials with HTTP 401.</summary>
+public sealed class AgentAuthException(string message) : Exception(message);
+
 public sealed class AgentApiClient(HttpClient http)
 {
     public async Task<EnrollApiResponse?> EnrollAsync(
@@ -29,6 +32,8 @@ public sealed class AgentApiClient(HttpClient http)
             Content = JsonContent.Create(request, AgentJsonContext.Default.TokenApiRequest),
         };
         using var resp = await http.SendAsync(msg, ct);
+        if (resp.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+            throw new AgentAuthException("Agent credentials rejected (401). Agent may be revoked, disabled, or have invalid credentials. Stop the agent service and re-enroll.");
         if (!resp.IsSuccessStatusCode)
             return null;
         await using var stream = await resp.Content.ReadAsStreamAsync(ct);
@@ -36,10 +41,12 @@ public sealed class AgentApiClient(HttpClient http)
     }
 
     public async Task<PendingUploadItem[]?> GetPendingUploadsAsync(
-        Uri baseUri, string bearerToken, CancellationToken ct)
+        Uri baseUri, string bearerToken, CancellationToken ct, Guid? runId = null)
     {
-        using var msg = new HttpRequestMessage(HttpMethod.Get,
-            new Uri(baseUri, "api/agent/tape/uploads/pending"));
+        var url = runId.HasValue
+            ? $"api/agent/tape/uploads/pending?runId={runId:D}"
+            : "api/agent/tape/uploads/pending";
+        using var msg = new HttpRequestMessage(HttpMethod.Get, new Uri(baseUri, url));
         msg.Headers.Authorization =
             new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", bearerToken);
         using var resp = await http.SendAsync(msg, ct);

@@ -41,8 +41,9 @@ public sealed class TapeFileHasher(
 
     /// <summary>
     /// Starts the background consumer. Called once from the DI-composed run loop.
+    /// Returns the consumer task directly so the caller can observe faults without Task.Run indirection.
     /// </summary>
-    public Task StartAsync(CancellationToken ct) => Task.Run(() => ConsumeAsync(ct), ct);
+    public Task StartAsync(CancellationToken ct) => ConsumeAsync(ct);
 
     // ── Consumer ───────────────────────────────────────────────────────────────
 
@@ -102,7 +103,7 @@ public sealed class TapeFileHasher(
         logger.LogInformation(
             "Forwarding file {FileId} to uploader (hash {HashStatus}).",
             item.FileId, hashHex is not null ? "ok" : "failed");
-        uploader.Enqueue(new TapeFileUploader.WorkItem(
+        await uploader.Enqueue(new TapeFileUploader.WorkItem(
             FileId:           item.FileId,
             RunId:            item.RunId,
             FilePath:         item.FilePath,

@@ -26,6 +26,15 @@ public sealed record CancelTapeRunCommand(
 public sealed record CancelTapeRunUploadsCommand(
     [property: JsonPropertyName("runId")] Guid RunId);
 
+public sealed record PauseTapeRunUploadCommand(
+    [property: JsonPropertyName("runId")] Guid RunId);
+
+public sealed record ResumeTapeRunUploadCommand(
+    [property: JsonPropertyName("runId")] Guid RunId);
+
+public sealed record ResumeRunUploadsCommand(
+    [property: JsonPropertyName("runId")] Guid RunId);
+
 public sealed record StopTapeRunReadingCommand(
     [property: JsonPropertyName("runId")] Guid RunId);
 
@@ -49,7 +58,9 @@ public sealed record UpdateTapeDeviceReadSettingsCommand(
     [property: JsonPropertyName("readBufferSizeBytes")] int ReadBufferSizeBytes);
 
 public sealed record AgentConfigCommand(
-    [property: JsonPropertyName("tapeCacheDirectory")] string? TapeCacheDirectory);
+    [property: JsonPropertyName("tapeCacheDirectory")] string? TapeCacheDirectory,
+    [property: JsonPropertyName("maxConcurrentFileUploads")] int? MaxConcurrentFileUploads = null,
+    [property: JsonPropertyName("maxConcurrentPartsPerFile")] int? MaxConcurrentPartsPerFile = null);
 
 // ── Active-operation snapshot (Agent → API) ───────────────────────────────────
 

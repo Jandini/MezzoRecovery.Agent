@@ -46,7 +46,8 @@ public sealed class AgentConnectionLoop(
         }
 
         // Initialise the uploader with credentials (once — hub updated on each connect).
-        fileUploader.Initialize(baseUri, cred.AgentId, cred.ClientSecret);
+        fileUploader.Initialize(baseUri, cred.AgentId, cred.ClientSecret,
+            cacheDirectory: _tapeCacheDirectory ?? AgentPaths.DefaultCacheDirectory);
 
         // Start background workers. They run for the lifetime of the process.
         ObserveWorker(fileHasher.StartAsync(ct), "hasher");
@@ -156,6 +157,7 @@ public sealed class AgentConnectionLoop(
                     _tapeCacheDirectory = string.IsNullOrEmpty(cmd.TapeCacheDirectory)
                         ? AgentPaths.DefaultCacheDirectory
                         : cmd.TapeCacheDirectory;
+                    fileUploader.UpdateConcurrency(cmd.MaxConcurrentFileUploads, cmd.MaxConcurrentPartsPerFile);
                     await ReportCacheStatusAsync(hub, CancellationToken.None);
                 });
 
@@ -232,6 +234,27 @@ public sealed class AgentConnectionLoop(
                 {
                     _logger.LogInformation("CancelTapeRunUploads received for run {RunId}.", command.RunId);
                     fileUploader.CancelRunUploads(command.RunId);
+                    return Task.CompletedTask;
+                });
+
+                hub.On<ResumeRunUploadsCommand>("ResumeRunUploads", async command =>
+                {
+                    _logger.LogInformation("ResumeRunUploads received for run {RunId}.", command.RunId);
+                    fileUploader.ResumeRunUploads(command.RunId);
+                    await ResumePendingUploadsAsync(baseUri, cred, ct, runId: command.RunId);
+                });
+
+                hub.On<PauseTapeRunUploadCommand>("PauseTapeRunUpload", command =>
+                {
+                    _logger.LogInformation("PauseTapeRunUpload received for run {RunId}.", command.RunId);
+                    fileUploader.PauseRunUpload(command.RunId);
+                    return Task.CompletedTask;
+                });
+
+                hub.On<ResumeTapeRunUploadCommand>("ResumeTapeRunUpload", command =>
+                {
+                    _logger.LogInformation("ResumeTapeRunUpload received for run {RunId}.", command.RunId);
+                    fileUploader.ResumeRunUpload(command.RunId);
                     return Task.CompletedTask;
                 });
 
@@ -315,6 +338,22 @@ public sealed class AgentConnectionLoop(
             catch (OperationCanceledException)
             {
                 break;
+            }
+            catch (AgentAuthException ex)
+            {
+                // 401 from the token endpoint means credentials are invalid/revoked — not a transient
+                // network error. Jump immediately to max backoff so a misconfigured agent does not
+                // hammer the token endpoint every 2–4 seconds on every process restart.
+                failureBackoff = TimeSpan.FromSeconds(maxFailureBackoffSeconds);
+                _logger.LogError(ex, "Agent authentication rejected. Backing off {Delay}. Stop the agent and re-enroll to fix.", failureBackoff);
+                try
+                {
+                    await Task.Delay(failureBackoff, ct);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
             }
             catch (Exception ex)
             {
@@ -456,7 +495,7 @@ public sealed class AgentConnectionLoop(
             while (!ct.IsCancellationRequested)
             {
                 await Task.Delay(interval, ct);
-                await reportPublisher.PublishFullDiscoveryAsync(connection, ct);
+                await reportPublisher.PublishFullDiscoveryAsync(connection, ct, suppressIfUnchanged: true);
             }
         }
         catch (OperationCanceledException)
@@ -470,7 +509,7 @@ public sealed class AgentConnectionLoop(
     /// .tic file still exists. Called on initial connect and every reconnect so
     /// orphaned uploads (from a crashed run or broken network window) are recovered.
     /// </summary>
-    private async Task ResumePendingUploadsAsync(Uri baseUri, AgentCredentialFile cred, CancellationToken ct)
+    private async Task ResumePendingUploadsAsync(Uri baseUri, AgentCredentialFile cred, CancellationToken ct, Guid? runId = null)
     {
         try
         {
@@ -484,7 +523,7 @@ public sealed class AgentConnectionLoop(
                 return;
             }
 
-            var pending = await api.GetPendingUploadsAsync(baseUri, token.AccessToken, ct);
+            var pending = await api.GetPendingUploadsAsync(baseUri, token.AccessToken, ct, runId);
             if (pending is null || pending.Length == 0)
                 return;
 
@@ -495,7 +534,16 @@ public sealed class AgentConnectionLoop(
             var enqueued = 0;
             foreach (var item in pending)
             {
+                // Skip uploads that are paused — they will remain paused until explicitly resumed.
+                if (item.IsPaused)
+                {
+                    _logger.LogInformation(
+                        "ResumePendingUploads: file {FileId} is paused; not re-enqueuing.", item.FileId);
+                    continue;
+                }
+
                 var localPath = TapeRunCacheLayout.GetFilePath(cacheDir, item.RunId, item.TapeFileNumber);
+
                 if (!File.Exists(localPath))
                 {
                     _logger.LogWarning(
@@ -504,12 +552,24 @@ public sealed class AgentConnectionLoop(
                     continue;
                 }
 
-                fileUploader.Enqueue(new TapeFileUploader.WorkItem(
-                    FileId:            item.FileId,
-                    RunId:             item.RunId,
-                    FilePath:          localPath,
-                    FileSizeBytes:     item.TotalBytes,
-                    UploadOperationId: null));
+                // Early-out: skip items already in an active upload slot.
+                // The scheduler's TryAdd is the authoritative duplicate guard, but avoiding
+                // unnecessary queue entries reduces churn when reconnects arrive mid-upload.
+                if (fileUploader.IsActivelyUploading(item.FileId))
+                {
+                    _logger.LogDebug(
+                        "ResumePendingUploads: file {FileId} already uploading; skipping re-enqueue.",
+                        item.FileId);
+                    continue;
+                }
+
+                await fileUploader.Enqueue(new TapeFileUploader.WorkItem(
+                    FileId:                    item.FileId,
+                    RunId:                     item.RunId,
+                    FilePath:                  localPath,
+                    FileSizeBytes:             item.TotalBytes,
+                    UploadOperationId:         null,
+                    ExistingUploadSessionId:   item.UploadSessionId));
                 enqueued++;
             }
 

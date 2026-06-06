@@ -40,6 +40,8 @@ internal sealed class TapeFileReporter : IAsyncDisposable
     private DateTimeOffset _fileStartedAt;
     private long           _fileStartBytesTotal;
     private long           _fileStartBlocksTotal;
+    private long           _lastKnownTotalBytes;
+    private long           _lastKnownTotalBlocks;
 
     public TapeFileReporter(
         StartTapeRunCommand command,
@@ -86,10 +88,10 @@ internal sealed class TapeFileReporter : IAsyncDisposable
     }
 
     public Task OnReadFailedAsync(HubConnection hub, string errorMessage, DateTimeOffset now) =>
-        EnqueueAndWaitAsync(() => ProcessTerminalAsync(hub, succeeded: false, errorMessage, now));
+        EnqueueAndWaitAsync(() => ProcessStoppedAsync(hub, now, errorMessage));
 
     public Task OnReadAbortedAsync(HubConnection hub, DateTimeOffset now) =>
-        EnqueueAndWaitAsync(() => ProcessTerminalAsync(hub, succeeded: false, "Tape run was cancelled.", now));
+        EnqueueAndWaitAsync(() => ProcessStoppedAsync(hub, now, "Tape run was cancelled."));
 
     // ── IAsyncDisposable ───────────────────────────────────────────────────────
 
@@ -118,6 +120,9 @@ internal sealed class TapeFileReporter : IAsyncDisposable
         long totalBytes, long totalBlocks,
         DateTimeOffset now)
     {
+        _lastKnownTotalBytes  = totalBytes;
+        _lastKnownTotalBlocks = totalBlocks;
+
         // File transition: complete the outgoing file before opening the next.
         // At transition, bytesInFile/blocksInFile belong to the NEW file (N+1), so subtracting
         // them from the running totals gives the cumulative through the end of the old file.
@@ -178,6 +183,34 @@ internal sealed class TapeFileReporter : IAsyncDisposable
                 ThroughputBytesPerSecond: null,
                 Succeeded:                succeeded,
                 ErrorMessage:             errorMessage));
+    }
+
+    private async Task ProcessStoppedAsync(HubConnection hub, DateTimeOffset now, string? errorMessage)
+    {
+        if (_currentFileId is null) return;
+
+        var bytesAtBoundary  = Math.Max(0, _lastKnownTotalBytes  - _fileStartBytesTotal);
+        var blocksAtBoundary = Math.Max(0, _lastKnownTotalBlocks - _fileStartBlocksTotal);
+
+        // In Clone mode the .tic file is already closed before this runs — the clone
+        // service flushes/closes on cancellation before the OCE propagates out of
+        // CloneToImageAsync. Read the actual size so the upload record is exact.
+        if (_isClone)
+        {
+            var localPath = TapeRunCacheLayout.GetFilePath(_cacheDirectory, _cacheRunId, _currentFileNumber);
+            try
+            {
+                var actualBytes = new FileInfo(localPath).Length;
+                if (actualBytes > 0)
+                    bytesAtBoundary = actualBytes;
+            }
+            catch (Exception) { /* absent or unreadable: fall back to tick-based estimate */ }
+        }
+
+        if (bytesAtBoundary > 0)
+            await CompleteCurrentAsync(hub, now, bytesAtBoundary, blocksAtBoundary, filemarkAfter: false);
+        else
+            await ProcessTerminalAsync(hub, succeeded: false, errorMessage, now);
     }
 
     // ── File lifecycle helpers ─────────────────────────────────────────────────

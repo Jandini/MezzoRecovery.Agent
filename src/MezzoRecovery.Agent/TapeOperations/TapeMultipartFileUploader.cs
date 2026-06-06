@@ -109,11 +109,14 @@ internal sealed class TapeMultipartFileUploader(
 
     // ── Upload entry point ────────────────────────────────────────────────────
 
-    public async Task UploadAsync(UploadWorkItem workItem, CancellationToken ct)
+    public async Task UploadAsync(UploadWorkItem workItem, CancellationToken runCt, CancellationToken globalCt)
     {
         FileId      = workItem.FileId;
         RunId       = workItem.RunId;
         _totalBytes = workItem.FileSizeBytes;
+
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(runCt, globalCt);
+        var ct = linkedCts.Token;
 
         // Seeds the token cache so the first part cycle doesn't need to fetch a token.
         var token = await GetOrRefreshTokenAsync(ct);
@@ -204,6 +207,12 @@ internal sealed class TapeMultipartFileUploader(
             try
             {
                 await Task.WhenAll(partTasks);
+            }
+            catch (OperationCanceledException) when (runCt.IsCancellationRequested && !globalCt.IsCancellationRequested)
+            {
+                logger.LogInformation("Upload for file {FileId} stopped by run cancellation. Aborting session.", workItem.FileId);
+                await AbortSessionSilentlyAsync(session.UploadSessionId, workItem.FileId);
+                return;
             }
             catch (OperationCanceledException)
             {
@@ -556,6 +565,20 @@ internal sealed class TapeMultipartFileUploader(
     }
 
     // ── Token refresh (cached with double-checked locking) ────────────────────
+
+    private async Task AbortSessionSilentlyAsync(Guid uploadSessionId, Guid fileId)
+    {
+        try
+        {
+            var token = await GetOrRefreshTokenAsync(CancellationToken.None);
+            if (token is not null)
+                await sessionClient.AbortSessionAsync(baseUri, token, uploadSessionId, CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Failed to abort upload session for file {FileId}.", fileId);
+        }
+    }
 
     private async Task<string?> GetOrRefreshTokenAsync(CancellationToken ct)
     {

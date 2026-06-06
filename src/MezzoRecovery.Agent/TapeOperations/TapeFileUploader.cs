@@ -55,6 +55,7 @@ public sealed class TapeFileUploader(
 
     private readonly ConcurrentDictionary<Guid, byte> _pausedRunIds    = new();
     private readonly ConcurrentDictionary<Guid, byte> _cancelledRunIds = new();
+    private readonly ConcurrentDictionary<Guid, CancellationTokenSource> _runCancellationSources = new();
     private readonly ConcurrentDictionary<Guid, TapeMultipartFileUploader> _activeUploaders = new();
 
     // ── Shared HTTP clients (one set per process — HttpClient is designed for reuse) ──
@@ -105,12 +106,15 @@ public sealed class TapeFileUploader(
     public void CancelRunUploads(Guid runId)
     {
         _cancelledRunIds.TryAdd(runId, 0);
+        _runCancellationSources.GetOrAdd(runId, _ => new CancellationTokenSource()).Cancel();
         logger.LogInformation("Upload cancellation registered for run {RunId}.", runId);
     }
 
     public void ResumeRunUploads(Guid runId)
     {
         _cancelledRunIds.TryRemove(runId, out _);
+        if (_runCancellationSources.TryRemove(runId, out var cts))
+            cts.Dispose();
         logger.LogInformation("Upload cancellation cleared for run {RunId}.", runId);
     }
 
@@ -251,15 +255,21 @@ public sealed class TapeFileUploader(
     }
 
     private async Task RunUploadAsync(
-        TapeMultipartFileUploader uploader, WorkItem item, SemaphoreSlim fileSlot, CancellationToken ct)
+        TapeMultipartFileUploader uploader, WorkItem item, SemaphoreSlim fileSlot, CancellationToken globalCt)
     {
+        var runCts = _runCancellationSources.GetOrAdd(item.RunId, _ => new CancellationTokenSource());
         try
         {
             await uploader.UploadAsync(
                 new UploadWorkItem(item.FileId, item.RunId, item.FilePath, item.FileSizeBytes, item.ExistingUploadSessionId),
-                ct);
+                runCts.Token,
+                globalCt);
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (globalCt.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (runCts.Token.IsCancellationRequested)
+        {
+            logger.LogInformation("Upload for file {FileId} skipped: run {RunId} was stopped before session start.", item.FileId, item.RunId);
+        }
         catch (Exception ex)
         {
             logger.LogError(ex, "Upload failed for file {FileId}.", item.FileId);
@@ -351,5 +361,7 @@ public sealed class TapeFileUploader(
         _apiHttpClient.Dispose();
         _sessionHttpClient.Dispose();
         _partHttpClient.Dispose();
+        foreach (var cts in _runCancellationSources.Values)
+            cts.Dispose();
     }
 }

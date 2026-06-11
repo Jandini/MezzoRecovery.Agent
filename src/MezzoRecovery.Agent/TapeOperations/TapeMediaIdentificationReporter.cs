@@ -92,7 +92,8 @@ public sealed class TapeMediaIdentificationReporter(ILogger<TapeMediaIdentificat
             LinuxDevicePath    = device.LinuxDevicePath,
             PreflightSucceeded = result?.IsReadable == true,
             IsEmpty            = result?.IsEmpty == true,
-            BlockSize          = result?.BlockBufferSize > 0 ? result.BlockBufferSize : null,
+            BlockSize          = result?.BlockSize       > 0 ? result.BlockSize       : null,
+            BlockBufferSize    = result?.BlockBufferSize > 0 ? result.BlockBufferSize : null,
             PreflightBlocks    = result?.PreflightBlocks?.Count > 0
                                      ? result.PreflightBlocks.ToArray()
                                      : null,

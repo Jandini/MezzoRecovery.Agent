@@ -115,8 +115,12 @@ public sealed class TapeRunRunner(
 
         var startedAt          = DateTimeOffset.UtcNow;
         var cts                = new CancellationTokenSource();
-        var effectiveBlockSize  = command.BlockSizeBytes  ?? snapshot?.ReadBlockSizeBytes ?? 0;
-        var effectiveBufferSize = command.BufferSizeBytes ?? snapshot?.ReadBufferSizeBytes ?? 65536;
+        var effectiveBlockSize = command.BlockSizeBytes
+            ?? (command.AutoDetect ? snapshot?.DetectedBlockSizeBytes : snapshot?.ReadBlockSizeBytes)
+            ?? 0;
+        var effectiveBufferSize = command.BufferSizeBytes
+            ?? (command.AutoDetect ? snapshot?.DetectedBlockBufferSizeBytes : snapshot?.ReadBufferSizeBytes)
+            ?? 65536;
 
         var opType = command.RunType.Equals("Clone", StringComparison.OrdinalIgnoreCase)
             ? TapeOperationTypes.Clone
@@ -167,11 +171,11 @@ public sealed class TapeRunRunner(
             TapeCloneResult result;
             if (opType == TapeOperationTypes.Clone)
             {
-                result = await RunCloneAsync(hub, command, runOp, fileReporter, cacheRunId, runOp.ReadingToken);
+                result = await RunCloneAsync(hub, command, runOp, fileReporter, cacheRunId, effectiveBlockSize, effectiveBufferSize, runOp.ReadingToken);
             }
             else
             {
-                result = await RunReadAsync(hub, command, runOp, fileReporter, runOp.ReadingToken);
+                result = await RunReadAsync(hub, command, runOp, fileReporter, effectiveBlockSize, effectiveBufferSize, runOp.ReadingToken);
             }
 
             if (mainOpId.HasValue)
@@ -267,14 +271,15 @@ public sealed class TapeRunRunner(
         TapeOperationStateStore.RunningOperation op,
         TapeFileReporter fileReporter,
         Guid cacheRunId,
+        int effectiveBlockSize,
+        int effectiveBufferSize,
         CancellationToken ct)
     {
         var cacheDir = command.CacheDirectory ?? AgentPaths.DefaultCacheDirectory;
         var runDir   = TapeRunCacheLayout.GetRunDirectory(cacheDir, cacheRunId);
         Directory.CreateDirectory(runDir);
 
-        var effectiveBlockSize  = command.BlockSizeBytes  ?? 0;
-        var effectiveBufferSize = Math.Max(512, command.BufferSizeBytes ?? 65536);
+        effectiveBufferSize = Math.Max(512, effectiveBufferSize);
 
         var request = new TapeToImageRequest
         {
@@ -314,10 +319,11 @@ public sealed class TapeRunRunner(
         StartTapeRunCommand command,
         TapeOperationStateStore.RunningOperation op,
         TapeFileReporter fileReporter,
+        int effectiveBlockSize,
+        int effectiveBufferSize,
         CancellationToken ct)
     {
-        var effectiveBlockSize  = command.BlockSizeBytes  ?? 0;
-        var effectiveBufferSize = Math.Max(512, command.BufferSizeBytes ?? 65536);
+        effectiveBufferSize = Math.Max(512, effectiveBufferSize);
 
         var request = new TapeVerifyRequest
         {

@@ -129,14 +129,36 @@ jobs:
           name: mra-linux-legacy
           path: staged
 
-      - name: SCP -> public_html/agent
-        uses: appleboy/scp-action@v1.0.0
-        with:
-          host: ${{ secrets.FTP_HOSTNAME }}
-          username: ${{ secrets.FTP_USERNAME }}
-          password: ${{ secrets.FTP_PASSWORD }}
-          port: ${{ secrets.FTP_PORT || '22' }}
-          source: staged/mra-linux-x64-legacy,staged/mra-linux-x64-legacy.sha256
-          strip_components: 1
-          target: /home/u318688167/domains/mezzorecovery.com/public_html/agent
-          overwrite: true
+      - name: Publish Agent
+        env:
+          SSHPASS: ${{ secrets.FTP_PASSWORD }}
+          FTP_HOST: ${{ secrets.FTP_HOSTNAME }}
+          FTP_USER: ${{ secrets.FTP_USERNAME }}
+          FTP_PORT_RAW: ${{ secrets.FTP_PORT }}
+        run: |
+          set -euo pipefail
+          PORT="${FTP_PORT_RAW:-22}"
+          TARGET="/home/u318688167/domains/mezzorecovery.com/public_html/agent"
+
+          SCP_OPTS=(
+            -o StrictHostKeyChecking=no
+            -o ServerAliveInterval=15
+            -o ServerAliveCountMax=5
+            -o ConnectTimeout=30
+            -P "${PORT}"
+          )
+
+          for attempt in $(seq 1 3); do
+            echo "SCP attempt ${attempt}/3..."
+            if sshpass -e scp "${SCP_OPTS[@]}" \
+                staged/mra-linux-x64-legacy staged/mra-linux-x64-legacy.sha256 \
+                "${FTP_USER}@${FTP_HOST}:${TARGET}/"; then
+              echo "SCP succeeded on attempt ${attempt}."
+              exit 0
+            fi
+            echo "SCP failed (attempt ${attempt}/3)."
+            [ "${attempt}" -lt 3 ] && sleep 10
+          done
+
+          echo "ERROR: SCP failed after 3 attempts."
+          exit 1

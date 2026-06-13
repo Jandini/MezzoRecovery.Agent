@@ -291,6 +291,11 @@ public sealed class TapeRunRunner(
             BufferSizeBytes   = effectiveBufferSize,
             RewindAfterComplete = true,
             EjectAfterComplete  = false,
+            OnSegmentClosed = (segmentIndex, filemarkAfter, _) =>
+            {
+                fileReporter.OnSegmentClosed(hub, segmentIndex, filemarkAfter);
+                return ValueTask.CompletedTask;
+            },
         };
 
         var staleCleared = 0;

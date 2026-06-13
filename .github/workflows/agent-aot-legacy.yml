@@ -34,16 +34,20 @@ jobs:
         with:
           dotnet-version: "10.0.x"
 
-      - name: Install GitVersion
-        uses: gittools/actions/gitversion/setup@v3
-        with:
-          versionSpec: "5.x"
+      - name: Install GitVersion 5.12
+        run: |
+          dotnet tool install --global GitVersion.Tool --version 5.12.*
+          echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
 
       - name: Determine version
         id: gitversion
-        uses: gittools/actions/gitversion/execute@v3
-        with:
-          useConfigFile: true
+        run: |
+          JSON=$(dotnet-gitversion /output json)
+          extract() { jq -r ".$1" <<< "$JSON"; }
+          {
+            echo "semVer=$(extract SemVer)"
+            echo "informationalVersion=$(extract InformationalVersion)"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Display GitVersion
         run: |
@@ -111,7 +115,7 @@ jobs:
               chmod 644 /workspace/out/mra-linux-x64-legacy.sha256
             '
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: mra-linux-legacy
           path: |
@@ -124,7 +128,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: mra-linux-legacy
           path: staged

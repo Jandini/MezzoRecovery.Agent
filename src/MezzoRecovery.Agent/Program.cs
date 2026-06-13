@@ -6,12 +6,12 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Console;
 
 using var serviceProvider = new ServiceCollection()
-    .AddLogging(b => b
-        .AddConsole(o => o.FormatterName = "terse")
-        .AddConsoleFormatter<TerseConsoleFormatter, SimpleConsoleFormatterOptions>(o =>
-        {
-            o.TimestampFormat = "HH:mm:ss ";
-        }))
+    .AddLogging(b =>
+    {
+        b.AddConsole(o => o.FormatterName = "terse");
+        b.Services.AddSingleton<ConsoleFormatter, TerseConsoleFormatter>();
+        b.Services.Configure<SimpleConsoleFormatterOptions>(o => o.TimestampFormat = "HH:mm:ss ");
+    })
     .AddAgentApp()
     .BuildServiceProvider();
 

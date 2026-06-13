@@ -33,16 +33,20 @@ jobs:
           dotnet-version: "10.0.x"
           source-url: https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json
 
-      - name: Install GitVersion
-        uses: gittools/actions/gitversion/setup@v3
-        with:
-          versionSpec: "5.x"
+      - name: Install GitVersion 5.12
+        run: |
+          dotnet tool install --global GitVersion.Tool --version 5.12.*
+          echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
 
       - name: Determine version
         id: gitversion
-        uses: gittools/actions/gitversion/execute@v3
-        with:
-          useConfigFile: true
+        run: |
+          JSON=$(dotnet-gitversion /output json)
+          extract() { jq -r ".$1" <<< "$JSON"; }
+          {
+            echo "semVer=$(extract SemVer)"
+            echo "informationalVersion=$(extract InformationalVersion)"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Display GitVersion
         run: |

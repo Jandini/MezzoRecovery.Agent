@@ -115,7 +115,7 @@ jobs:
               chmod 644 /workspace/out/mra-linux-x64-legacy.sha256
             '
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: mra-linux-legacy
           path: |
@@ -128,7 +128,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: mra-linux-legacy
           path: staged

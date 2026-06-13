@@ -249,6 +249,7 @@ public sealed class AgentTapePreflightResultDto
     [JsonPropertyName("preflightSucceeded")] public bool   PreflightSucceeded { get; set; }
     [JsonPropertyName("isEmpty")]            public bool   IsEmpty            { get; set; }
     [JsonPropertyName("blockSize")]          public int?   BlockSize          { get; set; }
+    [JsonPropertyName("blockBufferSize")]    public int?   BlockBufferSize    { get; set; }
     /// <summary>
     /// All blocks returned by <see cref="IPreflightService"/> (up to InitialBlockCount).
     /// Detectors that need only the first block read <c>PreflightBlocks[0]</c>;

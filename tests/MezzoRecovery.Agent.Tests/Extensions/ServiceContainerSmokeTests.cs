@@ -34,7 +34,7 @@ public sealed class ServiceContainerSmokeTests
         Assert.NotNull(sp.GetRequiredService<TapeMediaLoader>());
         Assert.NotNull(sp.GetRequiredService<TapePreflightRunner>());
         Assert.NotNull(sp.GetRequiredService<ITapePreflightTrigger>());
-        Assert.NotNull(sp.GetRequiredService<TapeReadRunner>());
+        Assert.NotNull(sp.GetRequiredService<TapeRunRunner>());
         Assert.NotNull(sp.GetRequiredService<TapeMediaControlService>());
         Assert.NotNull(sp.GetRequiredService<StopOperationHandler>());
     }

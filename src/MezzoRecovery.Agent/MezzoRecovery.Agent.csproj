@@ -55,7 +55,7 @@
 
 	<ItemGroup>
 		<PackageReference Include="MezzoRecovery.TapeDrive" Version="0.1.1-main.10" Condition="!Exists($(MezzoRecoveryTapeDriveProject))" />
-		<PackageReference Include="MezzoRecovery.Tape" Version="0.1.0-main.22" Condition="!Exists($(MezzoRecoveryTapeProject))" />
+		<PackageReference Include="MezzoRecovery.Tape" Version="0.1.0-main.23" Condition="!Exists($(MezzoRecoveryTapeProject))" />
 	</ItemGroup>
 
 </Project>

@@ -131,6 +131,14 @@ public sealed record MediaDetectionReport(
     [property: JsonPropertyName("linuxDevicePath")] string? LinuxDevicePath,
     [property: JsonPropertyName("nonRewindingDevicePath")] string? NonRewindingDevicePath);
 
+// ── Media action result (Agent → API) ────────────────────────────────────────
+
+public sealed record TapeMediaActionResultReport(
+    [property: JsonPropertyName("stableDeviceKey")] string StableDeviceKey,
+    [property: JsonPropertyName("operationType")]   string OperationType,
+    [property: JsonPropertyName("succeeded")]       bool   Succeeded,
+    [property: JsonPropertyName("errorMessage")]    string? ErrorMessage);
+
 // ── Run lifecycle (Agent → API) ───────────────────────────────────────────────
 
 public sealed record TapeRunProgressReport(

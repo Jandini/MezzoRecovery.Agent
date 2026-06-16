@@ -124,6 +124,9 @@ public sealed class TapeMediaControlService(
         deviceStore.UpdateStatus(command.StableDeviceKey, AgentTapeDeviceStatus.Busy, "BUSY");
         await publisher.PublishCurrentAsync(hub, CancellationToken.None);
 
+        bool actionOk = false;
+        string? actionError = null;
+
         try
         {
             logger.LogInformation(
@@ -134,26 +137,45 @@ public sealed class TapeMediaControlService(
             logger.LogInformation(
                 "ExecuteTapeMediaAction {Action}: executing tape command on device {DeviceId}.",
                 command.OperationType, command.TapeDeviceId);
-            var ok = command.OperationType switch
+
+            bool ok;
+            TapeDrive.Models.TapeDeviceDiagnostics? diag;
+            switch (command.OperationType)
             {
-                TapeOperationTypes.Rewind => tape.Navigator.TryRewind(out _),
-                TapeOperationTypes.Eject  => tape.Navigator.TryEject(out _),
-                TapeOperationTypes.Space  => tape.Navigator.TrySpaceFilemarksForward(
-                    Math.Max(1, command.SpaceCount ?? 1), out _),
-                _ => false,
-            };
+                case TapeOperationTypes.Rewind:
+                    ok = tape.Navigator.TryRewind(out diag);
+                    break;
+                case TapeOperationTypes.Eject:
+                    ok = tape.Navigator.TryEject(out diag);
+                    break;
+                case TapeOperationTypes.Space:
+                    ok = tape.Navigator.TrySpaceFilemarksForward(
+                        Math.Max(1, command.SpaceCount ?? 1), out diag);
+                    break;
+                default:
+                    ok = false;
+                    diag = null;
+                    break;
+            }
 
             if (ok)
+            {
+                actionOk = true;
                 logger.LogInformation(
                     "ExecuteTapeMediaAction {Action}: tape command succeeded on device {DeviceId}.",
                     command.OperationType, command.TapeDeviceId);
+            }
             else
+            {
+                actionError = diag?.Detail ?? $"{command.OperationType} failed.";
                 logger.LogWarning(
-                    "ExecuteTapeMediaAction {Action}: tape command failed on device {DeviceId}.",
-                    command.OperationType, command.TapeDeviceId);
+                    "ExecuteTapeMediaAction {Action}: tape command failed on device {DeviceId}: {Detail}",
+                    command.OperationType, command.TapeDeviceId, actionError);
+            }
         }
         catch (Exception ex)
         {
+            actionError = ex.Message;
             logger.LogError(ex,
                 "ExecuteTapeMediaAction {Action}: tape command threw on device {DeviceId}.",
                 command.OperationType, command.TapeDeviceId);
@@ -165,6 +187,23 @@ public sealed class TapeMediaControlService(
                 command.OperationType, command.TapeDeviceId);
             state.Remove(command.TapeDeviceId);
             cts.Dispose();
+
+            try
+            {
+                await hub.SendAsync("ReportTapeMediaActionResult",
+                    new TapeMediaActionResultReport(
+                        command.StableDeviceKey,
+                        command.OperationType,
+                        actionOk,
+                        actionOk ? null : actionError),
+                    CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex,
+                    "ExecuteTapeMediaAction {Action}: failed to send result report for device {DeviceId}.",
+                    command.OperationType, command.TapeDeviceId);
+            }
 
             try
             {

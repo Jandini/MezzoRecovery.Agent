@@ -74,6 +74,7 @@ public sealed class TapeMediaControlService(
         {
             TapeOperationTypes.Rewind => TapeMediaStatus.Rewinding,
             TapeOperationTypes.Space  => TapeMediaStatus.FastForwarding,
+            TapeOperationTypes.Eod    => TapeMediaStatus.FastForwarding,
             TapeOperationTypes.Eject  => TapeMediaStatus.Ejecting,
             _                          => TapeMediaStatus.Unknown,
         };
@@ -151,6 +152,9 @@ public sealed class TapeMediaControlService(
                 case TapeOperationTypes.Space:
                     ok = tape.Navigator.TrySpaceFilemarksForward(
                         Math.Max(1, command.SpaceCount ?? 1), out diag);
+                    break;
+                case TapeOperationTypes.Eod:
+                    ok = tape.Navigator.TrySeekEndOfRecordedMedia(out diag);
                     break;
                 default:
                     ok = false;

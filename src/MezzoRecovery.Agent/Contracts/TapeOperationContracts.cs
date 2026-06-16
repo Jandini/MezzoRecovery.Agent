@@ -250,4 +250,5 @@ public static class TapeOperationTypes
     public const string Rewind    = "Rewind";
     public const string Eject     = "Eject";
     public const string Space     = "Space";
+    public const string Eod       = "Eod";
 }

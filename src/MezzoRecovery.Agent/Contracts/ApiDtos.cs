@@ -311,6 +311,8 @@ public sealed class AgentTapePreflightResultDto
 [JsonSerializable(typeof(ActiveOperationSnapshot[]))]
 // ── Media detection ───────────────────────────────────────────────────────────
 [JsonSerializable(typeof(MediaDetectionReport))]
+// ── Media action result ────────────────────────────────────────────────────────
+[JsonSerializable(typeof(TapeMediaActionResultReport))]
 // ── Run lifecycle ─────────────────────────────────────────────────────────────
 [JsonSerializable(typeof(TapeRunProgressReport))]
 [JsonSerializable(typeof(TapeRunCompletedReport))]

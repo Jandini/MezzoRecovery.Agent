@@ -7,7 +7,7 @@ using Microsoft.Extensions.Logging;
 namespace MezzoRecovery.Agent.TapeOperations;
 
 /// <summary>
-/// Synchronous media operations (Rewind, Eject, Space). Each runs under the per-device lock.
+/// Synchronous media operations (Rewind, Eject, EOD). Each runs under the per-device lock.
 /// These operations are device-level utilities and do not report to the new tape-run pipeline.
 /// Results are logged locally and reflected in the device status refresh at the end.
 /// </summary>
@@ -73,7 +73,6 @@ public sealed class TapeMediaControlService(
         var pendingMediaStatus = command.OperationType switch
         {
             TapeOperationTypes.Rewind => TapeMediaStatus.Rewinding,
-            TapeOperationTypes.Space  => TapeMediaStatus.FastForwarding,
             TapeOperationTypes.Eod    => TapeMediaStatus.FastForwarding,
             TapeOperationTypes.Eject  => TapeMediaStatus.Ejecting,
             _                          => TapeMediaStatus.Unknown,
@@ -148,10 +147,6 @@ public sealed class TapeMediaControlService(
                     break;
                 case TapeOperationTypes.Eject:
                     ok = tape.Navigator.TryEject(out diag);
-                    break;
-                case TapeOperationTypes.Space:
-                    ok = tape.Navigator.TrySpaceFilemarksForward(
-                        Math.Max(1, command.SpaceCount ?? 1), out diag);
                     break;
                 case TapeOperationTypes.Eod:
                     ok = tape.Navigator.TrySeekEndOfRecordedMedia(out diag);

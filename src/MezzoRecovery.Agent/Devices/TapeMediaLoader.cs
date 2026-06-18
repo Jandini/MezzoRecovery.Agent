@@ -76,8 +76,7 @@ public sealed class TapeMediaLoader(
             device.PreflightError,
             device.DetectedBlockBufferSizeBytes,
             lastNoMediaAt == default ? null : lastNoMediaAt,
-            isRewindActive,
-            device.MediaStatus);
+            isRewindActive);
 
         var changed = deviceStore.UpdateMediaStatus(stableKey, computed);
 
@@ -117,8 +116,7 @@ public sealed class TapeMediaLoader(
         string? preflightError,
         int? detectedBlockBufferSizeBytes = null,
         DateTimeOffset? lastNoMediaAt = null,
-        bool isRewindActive = false,
-        TapeMediaStatus currentMediaStatus = TapeMediaStatus.Unknown)
+        bool isRewindActive = false)
     {
         // 1. DR_OPEN (or the equivalent NoMedia drive status) dominates everything else —
         //    no cartridge means no lifecycle.
@@ -143,25 +141,15 @@ public sealed class TapeMediaLoader(
                 TapeOperationTypes.Read      => TapeMediaStatus.Reading,
                 TapeOperationTypes.Clone     => TapeMediaStatus.Reading,
                 TapeOperationTypes.Rewind    => TapeMediaStatus.Rewinding,
-                TapeOperationTypes.Space     => TapeMediaStatus.FastForwarding,
+                TapeOperationTypes.Eod       => TapeMediaStatus.FastForwarding,
                 TapeOperationTypes.Eject     => TapeMediaStatus.Ejecting,
                 _                            => TapeMediaStatus.Unknown,
             };
         }
 
         // 3. Drive must be online & ready for any cartridge-aware state.
-        //    Preserve the last known transport status during the brief hardware-settling window
-        //    after a transport op ends — without this, a Busy probe with no active op returns
-        //    Unknown, which the UI shows as "In Motion" instead of e.g. "Fast Forwarding".
-        //    Only applies when the current status was set by this agent's own transport command
-        //    (FastForwarding/Rewinding/Ejecting); external drive activity always leaves the
-        //    store at Ready/Identifying/etc., so that path still returns Unknown → "In Motion".
         if (driveStatus != AgentTapeDeviceStatus.Ready)
-            return currentMediaStatus is TapeMediaStatus.FastForwarding
-                                      or TapeMediaStatus.Rewinding
-                                      or TapeMediaStatus.Ejecting
-                ? currentMediaStatus
-                : TapeMediaStatus.Unknown;
+            return TapeMediaStatus.Unknown;
 
         // 4. Preflight history: a result is "current" iff no no-media observation happened since.
         var preflightIsCurrent = lastPreflightAt is not null

@@ -121,7 +121,7 @@ jobs:
           PORT="${FTP_PORT_RAW:-22}"
           TARGET="/home/u318688167/domains/mezzorecovery.com/public_html/agent"
 
-          rsync -az --checksum --timeout=60 \
-            -e "sshpass -e ssh -p ${PORT} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30" \
+          rsync -az --checksum --timeout=15 \
+            -e "sshpass -e ssh -p ${PORT} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ServerAliveInterval=15 -o ServerAliveCountMax=5 -o ConnectTimeout=30" \
             staged/install staged/mra-linux-x64 staged/mra-linux-x64.sha256 staged/version.json \
             "${FTP_USER}@${FTP_HOST}:${TARGET}/"

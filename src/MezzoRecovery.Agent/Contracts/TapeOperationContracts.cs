@@ -134,10 +134,11 @@ public sealed record MediaDetectionReport(
 // ── Media action result (Agent → API) ────────────────────────────────────────
 
 public sealed record TapeMediaActionResultReport(
-    [property: JsonPropertyName("stableDeviceKey")] string StableDeviceKey,
-    [property: JsonPropertyName("operationType")]   string OperationType,
-    [property: JsonPropertyName("succeeded")]       bool   Succeeded,
-    [property: JsonPropertyName("errorMessage")]    string? ErrorMessage);
+    [property: JsonPropertyName("stableDeviceKey")] string  StableDeviceKey,
+    [property: JsonPropertyName("operationType")]   string  OperationType,
+    [property: JsonPropertyName("succeeded")]       bool    Succeeded,
+    [property: JsonPropertyName("errorMessage")]    string? ErrorMessage,
+    [property: JsonPropertyName("blockCount")]      long?   BlockCount = null);
 
 // ── Run lifecycle (Agent → API) ───────────────────────────────────────────────
 

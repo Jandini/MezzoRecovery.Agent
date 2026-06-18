@@ -58,7 +58,7 @@ public sealed class TapeMediaLoaderComputeTests
     [InlineData(TapeOperationTypes.Read, TapeMediaStatus.Reading)]
     [InlineData(TapeOperationTypes.Rewind, TapeMediaStatus.Rewinding)]
     [InlineData(TapeOperationTypes.Eject, TapeMediaStatus.Ejecting)]
-    [InlineData(TapeOperationTypes.Space, TapeMediaStatus.FastForwarding)]
+    [InlineData(TapeOperationTypes.Eod, TapeMediaStatus.FastForwarding)]
     public void Active_operations_project_to_matching_media_status(string op, TapeMediaStatus expected)
     {
         var status = TapeMediaLoader.Compute(

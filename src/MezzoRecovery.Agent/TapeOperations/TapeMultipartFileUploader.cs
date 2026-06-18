@@ -164,8 +164,12 @@ internal sealed class TapeMultipartFileUploader(
         // Discard stale part ETags when the S3 session changed (e.g. after stop+resume).
         // Old ETags are invalid for the new session — merging them would make the agent
         // think all parts are done and call CompleteMultipartUpload with wrong ETags.
-        if (checkpoint.UploadSessionId != session.UploadSessionId)
+        // Check both the DB session GUID and the underlying S3 upload ID: a new S3 upload
+        // can be created for the same DB session (same GUID) when a stopped run resumes.
+        if (checkpoint.UploadSessionId != session.UploadSessionId
+            || (session.ProviderUploadId is not null && checkpoint.ProviderUploadId != session.ProviderUploadId))
             checkpoint.CompletedParts = [];
+        checkpoint.ProviderUploadId = session.ProviderUploadId;
 
         var serverCompleted = session.CompletedParts.ToDictionary(p => p.PartNumber, p => p.ETag);
         var localCompleted  = checkpoint.CompletedParts.ToDictionary(p => p.PartNumber, p => p.ETag);
@@ -176,6 +180,7 @@ internal sealed class TapeMultipartFileUploader(
 
         checkpoint.CompletedParts   = allCompleted.Select(kv => new CheckpointPartDto { PartNumber = kv.Key, ETag = kv.Value }).ToArray();
         checkpoint.UploadSessionId  = session.UploadSessionId;
+        checkpoint.ProviderUploadId = session.ProviderUploadId;
         checkpoint.PartSizeBytes    = session.PartSizeBytes;
 
         // Seed _completedBytes from already-uploaded parts so GetUploadedBytes() is accurate from the start.
@@ -439,9 +444,24 @@ internal sealed class TapeMultipartFileUploader(
                     // ── Part succeeded ────────────────────────────────────────
 
                     var currentToken = await GetOrRefreshTokenAsync(ct);
-                    await sessionClient.CompletePartAsync(
+                    var partConfirmed = await sessionClient.CompletePartAsync(
                         baseUri, currentToken ?? string.Empty, session.UploadSessionId, partNumber,
                         new CompletePartApiRequest(etag, length), ct);
+
+                    if (!partConfirmed)
+                    {
+                        _partAttemptBytes[partNumber] = 0;
+                        signedUrlCache.TryRemove(partNumber, out _);
+                        if (attempt < MaxPartRetries)
+                        {
+                            var delay = TimeSpan.FromSeconds(Math.Min(300, Math.Pow(2, attempt)) * (0.8 + Random.Shared.NextDouble() * 0.4));
+                            logger.LogWarning(
+                                "Part {Part} of file {FileId}: CompletePartAsync failed on attempt {Attempt}/{Max}. Retrying in {Delay:F0}s.",
+                                partNumber, workItem.FileId, attempt, MaxPartRetries, delay.TotalSeconds);
+                            await Task.Delay(delay, ct);
+                        }
+                        continue;
+                    }
 
                     // Move bytes from in-flight → completed.
                     _partAttemptBytes.TryRemove(partNumber, out _);

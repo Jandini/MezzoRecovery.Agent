@@ -54,8 +54,8 @@
 	</ItemGroup>
 
 	<ItemGroup>
-		<PackageReference Include="MezzoRecovery.TapeDrive" Version="0.1.1-media-blocks.12" Condition="!Exists($(MezzoRecoveryTapeDriveProject))" />
-		<PackageReference Include="MezzoRecovery.Tape" Version="0.1.0-media-blocks.32" Condition="!Exists($(MezzoRecoveryTapeProject))" />
+		<PackageReference Include="MezzoRecovery.TapeDrive" Version="0.1.1-main.12" Condition="!Exists($(MezzoRecoveryTapeDriveProject))" />
+		<PackageReference Include="MezzoRecovery.Tape" Version="0.1.0-media-blocks.33" Condition="!Exists($(MezzoRecoveryTapeProject))" />
 	</ItemGroup>
 
 </Project>

@@ -124,8 +124,9 @@ public sealed class TapeMediaControlService(
         deviceStore.UpdateStatus(command.StableDeviceKey, AgentTapeDeviceStatus.Busy, "BUSY");
         await publisher.PublishCurrentAsync(hub, CancellationToken.None);
 
-        bool actionOk = false;
+        bool  actionOk    = false;
         string? actionError = null;
+        long?   blockCount  = null;
 
         try
         {
@@ -150,6 +151,22 @@ public sealed class TapeMediaControlService(
                     break;
                 case TapeOperationTypes.Eod:
                     ok = tape.Navigator.TrySeekEndOfRecordedMedia(out diag);
+                    if (ok)
+                    {
+                        if (tape.Status.TryTell(out var blk, out _))
+                        {
+                            blockCount = blk;
+                            logger.LogInformation(
+                                "ExecuteTapeMediaAction Eod: tape tell returned block {Block} for device {DeviceId}.",
+                                blk, command.TapeDeviceId);
+                        }
+                        else
+                        {
+                            logger.LogWarning(
+                                "ExecuteTapeMediaAction Eod: MTIOCPOS (tell) failed for device {DeviceId}; block count not recorded.",
+                                command.TapeDeviceId);
+                        }
+                    }
                     break;
                 default:
                     ok = false;
@@ -194,7 +211,8 @@ public sealed class TapeMediaControlService(
                         command.StableDeviceKey,
                         command.OperationType,
                         actionOk,
-                        actionOk ? null : actionError),
+                        actionOk ? null : actionError,
+                        blockCount),
                     CancellationToken.None);
             }
             catch (Exception ex)

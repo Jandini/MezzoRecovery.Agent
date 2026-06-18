@@ -34,19 +34,20 @@ public sealed record StartUploadSessionApiRequest(
     [property: JsonPropertyName("fileSha256")]            string? FileSha256 = null);
 
 public sealed record StartUploadSessionApiResponse(
-    [property: JsonPropertyName("uploadSessionId")] Guid                    UploadSessionId,
-    [property: JsonPropertyName("runId")]           Guid                    RunId,
-    [property: JsonPropertyName("fileId")]          Guid                    FileId,
-    [property: JsonPropertyName("status")]          string                  Status,
-    [property: JsonPropertyName("storageProvider")] string                  StorageProvider,
-    [property: JsonPropertyName("bucketName")]      string                  BucketName,
-    [property: JsonPropertyName("objectKey")]       string                  ObjectKey,
-    [property: JsonPropertyName("partSizeBytes")]   long                    PartSizeBytes,
-    [property: JsonPropertyName("totalBytes")]      long                    TotalBytes,
-    [property: JsonPropertyName("totalParts")]      int                     TotalParts,
-    [property: JsonPropertyName("uploadedBytes")]   long                    UploadedBytes,
-    [property: JsonPropertyName("completedParts")]  CompletedPartItemDto[]  CompletedParts,
-    [property: JsonPropertyName("expiresAt")]       DateTimeOffset?         ExpiresAt);
+    [property: JsonPropertyName("uploadSessionId")]  Guid                    UploadSessionId,
+    [property: JsonPropertyName("runId")]            Guid                    RunId,
+    [property: JsonPropertyName("fileId")]           Guid                    FileId,
+    [property: JsonPropertyName("status")]           string                  Status,
+    [property: JsonPropertyName("storageProvider")]  string                  StorageProvider,
+    [property: JsonPropertyName("bucketName")]       string                  BucketName,
+    [property: JsonPropertyName("objectKey")]        string                  ObjectKey,
+    [property: JsonPropertyName("partSizeBytes")]    long                    PartSizeBytes,
+    [property: JsonPropertyName("totalBytes")]       long                    TotalBytes,
+    [property: JsonPropertyName("totalParts")]       int                     TotalParts,
+    [property: JsonPropertyName("uploadedBytes")]    long                    UploadedBytes,
+    [property: JsonPropertyName("completedParts")]   CompletedPartItemDto[]  CompletedParts,
+    [property: JsonPropertyName("expiresAt")]        DateTimeOffset?         ExpiresAt,
+    [property: JsonPropertyName("providerUploadId")] string?                 ProviderUploadId = null);
 
 public sealed record SignPartsApiRequest(
     [property: JsonPropertyName("parts")] PartToSignDto[] Parts);
@@ -86,15 +87,16 @@ public sealed record FailUploadApiRequest(
 
 public sealed class UploadCheckpoint
 {
-    [JsonPropertyName("runId")]          public Guid                RunId           { get; set; }
-    [JsonPropertyName("fileId")]         public Guid                FileId          { get; set; }
-    [JsonPropertyName("uploadSessionId")] public Guid               UploadSessionId { get; set; }
-    [JsonPropertyName("filePath")]       public string              FilePath        { get; set; } = string.Empty;
-    [JsonPropertyName("fileName")]       public string              FileName        { get; set; } = string.Empty;
-    [JsonPropertyName("fileSizeBytes")]  public long                FileSizeBytes   { get; set; }
-    [JsonPropertyName("partSizeBytes")]  public long                PartSizeBytes   { get; set; }
-    [JsonPropertyName("completedParts")] public CheckpointPartDto[] CompletedParts  { get; set; } = [];
-    [JsonPropertyName("updatedAtUtc")]   public DateTimeOffset      UpdatedAtUtc    { get; set; }
+    [JsonPropertyName("runId")]            public Guid                RunId             { get; set; }
+    [JsonPropertyName("fileId")]           public Guid                FileId            { get; set; }
+    [JsonPropertyName("uploadSessionId")]  public Guid                UploadSessionId   { get; set; }
+    [JsonPropertyName("providerUploadId")] public string?             ProviderUploadId  { get; set; }
+    [JsonPropertyName("filePath")]         public string              FilePath          { get; set; } = string.Empty;
+    [JsonPropertyName("fileName")]         public string              FileName          { get; set; } = string.Empty;
+    [JsonPropertyName("fileSizeBytes")]    public long                FileSizeBytes     { get; set; }
+    [JsonPropertyName("partSizeBytes")]    public long                PartSizeBytes     { get; set; }
+    [JsonPropertyName("completedParts")]   public CheckpointPartDto[] CompletedParts    { get; set; } = [];
+    [JsonPropertyName("updatedAtUtc")]     public DateTimeOffset      UpdatedAtUtc      { get; set; }
 }
 
 public sealed class CheckpointPartDto

@@ -219,10 +219,13 @@ public sealed class TapeRunRunner(
             await fileReporter.DisposeAsync();
             _runToDevice.TryRemove(command.RunId, out _);
             state.Remove(command.TapeDeviceId);
-            // Clear the cached media status immediately after the op is de-registered.
-            // Without this the post-run probe can briefly observe the kernel still holding
-            // the device (MTIOCGET BUSY) and write Busy+Reading back into the cache,
-            // leaving the UX stuck until the next poller cycle.
+            // Clear both device status and media status immediately after the op is de-registered.
+            // The post-run probe can briefly observe the kernel still holding the device (MTIOCGET
+            // BUSY) and write Busy back into the cache, overwriting the API's CompleteAsync clear
+            // and leaving the UX stuck until the next poller cycle. Pre-emptively setting Unknown
+            // here ensures the poller's change-detection guard suppresses a no-op re-publish even
+            // if the kernel hasn't fully released the device by the time the probe fires.
+            deviceStore.UpdateStatus(command.StableDeviceKey, AgentTapeDeviceStatus.Unknown, "POST_RUN");
             deviceStore.UpdateMediaStatus(command.StableDeviceKey, TapeMediaStatus.Unknown);
             runOp.ReadingCts.Dispose();
             cts.Dispose();

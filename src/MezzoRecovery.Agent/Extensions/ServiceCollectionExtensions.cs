@@ -37,6 +37,7 @@ internal static class ServiceCollectionExtensions
             .AddSingleton<ITapeDriveEnumerator, SysfsTapeDriveEnumerator>()
             .AddSingleton<IScsiHostEnumerator, SysfsScsiHostScanner>()
             .AddSingleton<IScsiTapeDeviceManager, SysfsScsiTapeDeviceManager>()
+            .AddSingleton<ITapeDensityCapabilityReader, LinuxTapeDensityCapabilityReader>()
             .AddSingleton<TapeDeviceLockManager>()
             .AddSingleton<TapeOperationStateStore>()
             .AddSingleton<ITapeVerifyService, TapeVerifyService>()

@@ -202,6 +202,21 @@ public sealed class AgentTapeDeviceDto
     [JsonPropertyName("mtStatusLabels")]
     public string? MtStatusLabels { get; set; }
 
+    /// <summary>
+    /// Human-readable list of tape generations this drive supports (e.g. "LTO-4, LTO-5, LTO-6"
+    /// or "DDS-3, DDS-4"), from the SCSI REPORT DENSITY SUPPORT command. Null when the drive
+    /// could not be queried (e.g. not present/accessible).
+    /// </summary>
+    [JsonPropertyName("supportedTapeGenerations")]
+    public string? SupportedTapeGenerations { get; set; }
+
+    /// <summary>
+    /// Human-readable generation of the currently loaded tape (e.g. "LTO-5"), decoded from the
+    /// driver status register at the last successful preflight. Cleared when the medium changes.
+    /// </summary>
+    [JsonPropertyName("loadedTapeGeneration")]
+    public string? LoadedTapeGeneration { get; set; }
+
     [JsonPropertyName("serialNumber")]
     public string? SerialNumber { get; set; }
 
@@ -260,6 +275,12 @@ public sealed class AgentTapePreflightResultDto
     [JsonPropertyName("preflightBlocks")]    public byte[][]? PreflightBlocks { get; set; }
     [JsonPropertyName("errorMessage")]       public string? ErrorMessage      { get; set; }
     [JsonPropertyName("detectedAt")]         public DateTimeOffset DetectedAt { get; set; }
+
+    /// <summary>
+    /// Human-readable generation of the tape just read (e.g. "LTO-5"), decoded from the
+    /// drive's density code obtained from the physical medium during preflight.
+    /// </summary>
+    [JsonPropertyName("tapeGeneration")]     public string? TapeGeneration    { get; set; }
 }
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]

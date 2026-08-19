@@ -139,6 +139,7 @@ public sealed class TapePreflightRunner(
                 // Refresh forces a rewind to BOT regardless of the configured default so
                 // identification always reads from the start of the tape.
                 RewindBeforeStart = rewindBeforeStart || options.Value.RewindBeforeStart,
+                DriveVendor = device.Vendor,
             };
 
             logger.LogInformation("Preflight starting for device {Key} at {Path}.", stableKey, probePath);
@@ -208,7 +209,7 @@ public sealed class TapePreflightRunner(
         // 3) release the busy flag,
         // 4) set the terminal MediaStatus directly (overrides any racey Identifying writes),
         // 5) publish a single snapshot to the API.
-        deviceStore.UpdatePreflightResult(stableKey, detectedBlockSize, detectedBufferSize, error, completedAt);
+        deviceStore.UpdatePreflightResult(stableKey, detectedBlockSize, detectedBufferSize, error, completedAt, result?.TapeGeneration);
         deviceStore.UpdateStatus(stableKey, probedStatus, probedLabels);
         state.Remove(op.TapeDeviceId);
         cts.Dispose();

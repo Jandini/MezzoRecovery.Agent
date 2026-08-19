@@ -101,5 +101,6 @@ public sealed class TapeMediaIdentificationReporter(ILogger<TapeMediaIdentificat
                                      ? null
                                      : (failureMessage ?? result?.ErrorMessage ?? "Preflight failed."),
             DetectedAt         = detectedAt,
+            TapeGeneration     = result?.TapeGeneration,
         };
 }

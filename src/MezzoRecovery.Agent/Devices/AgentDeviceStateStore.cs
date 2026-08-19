@@ -40,6 +40,7 @@ public sealed class AgentDeviceStateStore
                     clone.DetectedBlockBufferSizeBytes = prev.DetectedBlockBufferSizeBytes;
                     clone.LastPreflightAt = prev.LastPreflightAt;
                     clone.PreflightError = prev.PreflightError;
+                    clone.LoadedTapeGeneration = prev.LoadedTapeGeneration;
                     // Settings are server-owned; re-discovery on the agent must never reset them
                     // back to the DTO defaults, or the next preflight would auto-detect when the
                     // user had pinned the drive to manual mode.
@@ -102,7 +103,8 @@ public sealed class AgentDeviceStateStore
         int? blockSize,
         int? blockBufferSize,
         string? error,
-        DateTimeOffset completedAt)
+        DateTimeOffset completedAt,
+        string? tapeGeneration = null)
     {
         lock (_gate)
         {
@@ -111,13 +113,15 @@ public sealed class AgentDeviceStateStore
             if (existing.DetectedBlockSizeBytes == blockSize
                 && existing.DetectedBlockBufferSizeBytes == blockBufferSize
                 && existing.PreflightError == error
-                && existing.LastPreflightAt == completedAt)
+                && existing.LastPreflightAt == completedAt
+                && existing.LoadedTapeGeneration == tapeGeneration)
                 return false;
 
             existing.DetectedBlockSizeBytes = blockSize;
             existing.DetectedBlockBufferSizeBytes = blockBufferSize;
             existing.PreflightError = error;
             existing.LastPreflightAt = completedAt;
+            existing.LoadedTapeGeneration = tapeGeneration;
             return true;
         }
     }
@@ -138,13 +142,15 @@ public sealed class AgentDeviceStateStore
             if (existing is null) return false;
             if (existing.DetectedBlockSizeBytes is null
                 && existing.DetectedBlockBufferSizeBytes is null
-                && existing.PreflightError is null)
+                && existing.PreflightError is null
+                && existing.LoadedTapeGeneration is null)
                 return false;
 
             existing.DetectedBlockSizeBytes = null;
             existing.DetectedBlockBufferSizeBytes = null;
             existing.PreflightError = null;
             existing.LastPreflightAt = DateTimeOffset.UtcNow;
+            existing.LoadedTapeGeneration = null;
             return true;
         }
     }
@@ -213,5 +219,7 @@ public sealed class AgentDeviceStateStore
         AutoDetectReadSettings = d.AutoDetectReadSettings,
         ReadBlockSizeBytes = d.ReadBlockSizeBytes,
         ReadBufferSizeBytes = d.ReadBufferSizeBytes,
+        SupportedTapeGenerations = d.SupportedTapeGenerations,
+        LoadedTapeGeneration = d.LoadedTapeGeneration,
     };
 }

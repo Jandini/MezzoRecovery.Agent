@@ -80,7 +80,7 @@ public sealed class DeviceReportPublisher(
             .Select(d =>
                 $"{d.StableDeviceKey}|{MapDeviceStatusToWire(d.Status)}|{MapMediaStatusToWire(d.MediaStatus)}" +
                 $"|{d.IsPresent}|{d.IsAccessible}|{d.MtStatusLabels}|{d.Vendor}|{d.Model}|{d.SerialNumber}" +
-                $"|{d.ReadBlockSizeBytes}|{d.ReadBufferSizeBytes}"));
+                $"|{d.ReadBlockSizeBytes}|{d.ReadBufferSizeBytes}|{d.SupportedTapeGenerations}|{d.LoadedTapeGeneration}"));
 
     /// <summary>
     /// Sends the current cached state to the API without re-running discovery.
@@ -185,7 +185,9 @@ public sealed class DeviceReportPublisher(
         ReadBlockSizeBytes:      d.ReadBlockSizeBytes,
         ReadBufferSizeBytes:     d.ReadBufferSizeBytes,
         DeviceStatus:            MapDeviceStatusToWire(d.Status),
-        MediaStatus:             MapMediaStatusToWire(d.MediaStatus));
+        MediaStatus:             MapMediaStatusToWire(d.MediaStatus),
+        SupportedTapeGenerations: d.SupportedTapeGenerations,
+        LoadedTapeGeneration:    d.LoadedTapeGeneration);
 
     // Normalises agent device status to domain-supported values.
     // No-tape is modelled as Ready + MediaStatus.NoMedia; Unavailable maps to Error.

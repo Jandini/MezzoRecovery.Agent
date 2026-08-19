@@ -107,7 +107,9 @@ public sealed record TapeDeviceWireDto(
     [property: JsonPropertyName("readBlockSizeBytes")] int ReadBlockSizeBytes,
     [property: JsonPropertyName("readBufferSizeBytes")] int ReadBufferSizeBytes,
     [property: JsonPropertyName("deviceStatus")] string DeviceStatus,
-    [property: JsonPropertyName("mediaStatus")] string MediaStatus);
+    [property: JsonPropertyName("mediaStatus")] string MediaStatus,
+    [property: JsonPropertyName("supportedTapeGenerations")] string? SupportedTapeGenerations = null,
+    [property: JsonPropertyName("loadedTapeGeneration")] string? LoadedTapeGeneration = null);
 
 // ── Media detection (Agent → API) ─────────────────────────────────────────────
 
@@ -129,7 +131,8 @@ public sealed record MediaDetectionReport(
     [property: JsonPropertyName("status")] string Status,
     [property: JsonPropertyName("errorMessage")] string? ErrorMessage,
     [property: JsonPropertyName("linuxDevicePath")] string? LinuxDevicePath,
-    [property: JsonPropertyName("nonRewindingDevicePath")] string? NonRewindingDevicePath);
+    [property: JsonPropertyName("nonRewindingDevicePath")] string? NonRewindingDevicePath,
+    [property: JsonPropertyName("tapeGeneration")] string? TapeGeneration = null);
 
 // ── Media action result (Agent → API) ────────────────────────────────────────
 

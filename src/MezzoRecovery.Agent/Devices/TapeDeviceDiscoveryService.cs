@@ -10,6 +10,7 @@ namespace MezzoRecovery.Agent.Devices;
 public sealed class TapeDeviceDiscoveryService(
     ITapeDriveEnumerator enumerator,
     IScsiTapeDeviceManager? scsiTapeDeviceManager,
+    ITapeDensityCapabilityReader? densityCapabilityReader,
     ILogger<TapeDeviceDiscoveryService> logger)
 {
     /// <summary>
@@ -58,6 +59,8 @@ public sealed class TapeDeviceDiscoveryService(
 
                 var baseName = nonRewinding ?? rewinding;
                 var (sysfsPath, scsiAddress, serialNumber) = ReadSysfsDeviceInfo(baseName);
+                var vendor = NullIfEmpty(drive.Vendor);
+                var supportedTapeGenerations = accessible ? QuerySupportedTapeGenerations(probePath, vendor) : null;
 
                 result.Add(new AgentTapeDeviceDto
                 {
@@ -65,7 +68,7 @@ public sealed class TapeDeviceDiscoveryService(
                     LinuxDevicePath = devicePath,
                     NonRewindingDevicePath = nonRewindingPath,
                     RewindingDevicePath = rewindingPath,
-                    Vendor = NullIfEmpty(drive.Vendor),
+                    Vendor = vendor,
                     Model = NullIfEmpty(drive.Model),
                     Revision = NullIfEmpty(drive.Revision),
                     SerialNumber = serialNumber,
@@ -75,6 +78,7 @@ public sealed class TapeDeviceDiscoveryService(
                     MtStatusLabels = mtStatusLabels,
                     IsPresent = true,
                     IsAccessible = accessible,
+                    SupportedTapeGenerations = supportedTapeGenerations,
                 });
             }
 
@@ -243,6 +247,35 @@ public sealed class TapeDeviceDiscoveryService(
         catch
         {
             return (AgentTapeDeviceStatus.Unavailable, null, null);
+        }
+    }
+
+    /// <summary>
+    /// Queries the drive for every density it supports via SCSI REPORT DENSITY SUPPORT
+    /// and formats the result as a human-readable generation list (e.g. "LTO-4, LTO-5,
+    /// LTO-6"). Returns <see langword="null"/> when the reader is unavailable, the ioctl
+    /// fails, or no code resolves to a known label - never a guessed or default value.
+    /// </summary>
+    private string? QuerySupportedTapeGenerations(string probePath, string? vendor)
+    {
+        if (densityCapabilityReader is null)
+            return null;
+
+        try
+        {
+            if (!densityCapabilityReader.TryGetSupportedDensityCodes(probePath, out var codes, out var errno))
+            {
+                if (errno != 0)
+                    logger.LogDebug("REPORT DENSITY SUPPORT failed for {DevicePath} (errno {Errno}).", probePath, errno);
+                return null;
+            }
+
+            return TapeGenerationLabels.FormatSupported(codes, vendor);
+        }
+        catch (Exception ex)
+        {
+            logger.LogDebug(ex, "REPORT DENSITY SUPPORT threw for {DevicePath}.", probePath);
+            return null;
         }
     }
 

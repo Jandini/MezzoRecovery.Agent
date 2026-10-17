@@ -34,7 +34,7 @@ internal static class ServiceCollectionExtensions
             .AddSingleton<IOptions<TapeDeviceStatusOptions>>(sp => Options.Create(sp.GetRequiredService<TapeDeviceStatusOptions>()))
             .AddSingleton<TapeMediaLoaderOptions>()
             .AddSingleton<IOptions<TapeMediaLoaderOptions>>(sp => Options.Create(sp.GetRequiredService<TapeMediaLoaderOptions>()))
-            .AddSingleton<ITapeDriveEnumerator, SysfsTapeDriveEnumerator>()
+            .AddSingleton<ITapeDriveEnumerator>(_ => new VirtualTapeDriveEnumerator(new SysfsTapeDriveEnumerator()))
             .AddSingleton<IScsiHostEnumerator, SysfsScsiHostScanner>()
             .AddSingleton<IScsiTapeDeviceManager, SysfsScsiTapeDeviceManager>()
             .AddSingleton<ITapeDensityCapabilityReader, LinuxTapeDensityCapabilityReader>()

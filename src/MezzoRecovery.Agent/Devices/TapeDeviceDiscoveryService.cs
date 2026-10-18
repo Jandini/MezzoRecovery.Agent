@@ -2,6 +2,7 @@ using System.Text;
 using MezzoRecovery.Agent.Contracts;
 using MezzoRecovery.TapeDrive.Abstractions;
 using MezzoRecovery.TapeDrive.Linux;
+using MezzoRecovery.TapeDrive.Linux.Discovery;
 using MezzoRecovery.TapeDrive.Models;
 using Microsoft.Extensions.Logging;
 
@@ -33,10 +34,16 @@ public sealed class TapeDeviceDiscoveryService(
                 if (devicePath is null)
                     continue;
 
-                var nonRewinding = drive.LinuxDevices
-                    .FirstOrDefault(d => d.StartsWith("nst", StringComparison.Ordinal) && IsBaseDeviceName(d, "nst"));
-                var rewinding = drive.LinuxDevices
-                    .FirstOrDefault(d => d.StartsWith("st", StringComparison.Ordinal) && !d.StartsWith("nst", StringComparison.Ordinal) && IsBaseDeviceName(d, "st"));
+                var isVirtual = drive.IsVirtual;
+                // A vt node is /dev/<name>: no-rewind only, and its name does not follow the nst/st pattern.
+                var nonRewinding = isVirtual
+                    ? drive.LinuxDevices.FirstOrDefault()
+                    : drive.LinuxDevices
+                        .FirstOrDefault(d => d.StartsWith("nst", StringComparison.Ordinal) && IsBaseDeviceName(d, "nst"));
+                var rewinding = isVirtual
+                    ? null
+                    : drive.LinuxDevices
+                        .FirstOrDefault(d => d.StartsWith("st", StringComparison.Ordinal) && !d.StartsWith("nst", StringComparison.Ordinal) && IsBaseDeviceName(d, "st"));
 
                 var nonRewindingPath = nonRewinding is not null ? "/dev/" + nonRewinding : null;
                 var rewindingPath = rewinding is not null ? "/dev/" + rewinding : null;
@@ -54,13 +61,15 @@ public sealed class TapeDeviceDiscoveryService(
                 }
                 else
                 {
-                    (status, mtStatusLabels, _) = ProbeTapeStatus(probePath, accessible);
+                    (status, mtStatusLabels, _) = ProbeTapeStatus(probePath, accessible, isVirtual);
                 }
 
-                var baseName = nonRewinding ?? rewinding;
-                var (sysfsPath, scsiAddress, serialNumber) = ReadSysfsDeviceInfo(baseName);
+                // Virtual drives have no sysfs entry and SG_IO returns -ENOTTY; both stay null.
+                var (sysfsPath, scsiAddress, serialNumber) = isVirtual
+                    ? (null, null, null)
+                    : ReadSysfsDeviceInfo(nonRewinding ?? rewinding);
                 var vendor = NullIfEmpty(drive.Vendor);
-                var supportedTapeGenerations = accessible ? QuerySupportedTapeGenerations(probePath, vendor) : null;
+                var supportedTapeGenerations = accessible && !isVirtual ? QuerySupportedTapeGenerations(probePath, vendor) : null;
 
                 result.Add(new AgentTapeDeviceDto
                 {
@@ -112,10 +121,10 @@ public sealed class TapeDeviceDiscoveryService(
     {
         var probePath = device.NonRewindingDevicePath ?? device.LinuxDevicePath;
         var accessible = CheckAccessible(device.LinuxDevicePath);
-        return ProbeTapeStatus(probePath, accessible);
+        return ProbeTapeStatus(probePath, accessible, VirtualTapeDrive.IsVirtual(device.Vendor, device.Model));
     }
 
-    private (AgentTapeDeviceStatus Status, string? MtStatusLabels, TapeGstatFlags? Flags) ProbeTapeStatus(string probePath, bool accessible)
+    private (AgentTapeDeviceStatus Status, string? MtStatusLabels, TapeGstatFlags? Flags) ProbeTapeStatus(string probePath, bool accessible, bool isVirtual)
     {
         if (!accessible)
             return (AgentTapeDeviceStatus.Unavailable, null, null);
@@ -145,7 +154,8 @@ public sealed class TapeDeviceDiscoveryService(
             // EIO (errno 5): the device node exists but MTIOCGET failed - likely a stale/disconnected
             // device. Attempt a one-shot SCSI removal and re-probe. If the device was genuinely
             // disconnected it will disappear; if it recovers the second probe will succeed.
-            if (probe.Errno == 5 && scsiTapeDeviceManager is not null)
+            // Not for virtual drives: a missing sysfs entry is normal and there is no H:C:T:L to delete.
+            if (probe.Errno == 5 && !isVirtual && scsiTapeDeviceManager is not null)
                 return TryRecoverEioDevice(probePath);
 
             var mtLabels = probe.FailureCategory switch

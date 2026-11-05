@@ -132,3 +132,10 @@ Built by GitHub Actions and deployed to `https://mezzorecovery.com/agent/`:
 - Enrollment codes are one-time use, hashed in the database, and expire after 15 minutes.
 - Agent credentials and machine identity are stored with mode `600`.
 - The process lock at `/run/mezzorecovery-agent.lock` prevents duplicate instances.
+
+## Preview
+
+This note is rendered in the markdown preview. It uses **bold text** and a short list:
+
+- The change is only in `README.md`.
+- The preview shows the formatted note beside the diff.

@@ -54,8 +54,8 @@
 	</ItemGroup>
 
 	<ItemGroup>
-		<PackageReference Include="MezzoRecovery.TapeDrive" Version="0.2.1-readme-preview-demo.3" Condition="!Exists($(MezzoRecoveryTapeDriveProject))" />
-		<PackageReference Include="MezzoRecovery.Tape" Version="0.1.0-readme-preview-demo.41" Condition="!Exists($(MezzoRecoveryTapeProject))" />
+		<PackageReference Include="MezzoRecovery.TapeDrive" Version="0.2.1-prepare-workspace-demo.3" Condition="!Exists($(MezzoRecoveryTapeDriveProject))" />
+		<PackageReference Include="MezzoRecovery.Tape" Version="0.1.0-prepare-workspace-demo.41" Condition="!Exists($(MezzoRecoveryTapeProject))" />
 	</ItemGroup>
 
 </Project>

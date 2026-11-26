@@ -1,9 +1,36 @@
 # MezzoRecovery Agent (`mra`)
 
-[![Build](https://github.com/Jandini/MezzoRecovery.Agent/actions/workflows/build.yml/badge.svg)](https://github.com/Jandini/MezzoRecovery.Agent/actions/workflows/build.yml)
+[![Tests](https://github.com/Jandini/MezzoRecovery.Agent/actions/workflows/agent-tests.yml/badge.svg)](https://github.com/Jandini/MezzoRecovery.Agent/actions/workflows/agent-tests.yml)
 [![AOT Publish](https://github.com/Jandini/MezzoRecovery.Agent/actions/workflows/agent-aot-scp.yml/badge.svg)](https://github.com/Jandini/MezzoRecovery.Agent/actions/workflows/agent-aot-scp.yml)
 
 `mra` is the privileged Linux recovery host agent for the [MezzoRecovery](https://mezzorecovery.com) platform. It runs as a systemd service, connects outbound to the MezzoRecovery API via SignalR, and reports live status. One agent per machine.
+
+## Architecture
+
+`mra` is the only part of the platform that touches tape hardware. It holds one outbound SignalR connection to the Api, receives commands on it, and reports back. Image bytes go straight to object storage through pre-signed URLs. The agent never holds storage credentials.
+
+```mermaid
+flowchart LR
+  Api["MezzoRecovery.Api"] -->|"commands: StartTapeRun, CancelTapeRun, PauseTapeRunUpload, ..."| Loop
+  subgraph mra
+    Loop["AgentConnectionLoop"] --> Runner["TapeRunRunner"]
+    Loop --> Dev["Device discovery, status poller, media loader"]
+    Runner -->|".tic per tape file"| Hash["TapeFileHasher"]
+    Hash --> Up["TapeFileUploader"]
+  end
+  Runner -->|"MezzoRecovery.Tape + TapeDrive"| Drive[["/dev/nst*"]]
+  Dev -->|"reports: devices, preflight"| Api
+  Runner -->|"reports: progress, files, completion"| Api
+  Up -->|"sign parts, complete (JWT REST)"| Api
+  Up -->|"PUT parts"| S3[("Object storage")]
+```
+
+- **Runs.** A Clone run reads the tape into one compact `.tic` file per tape file under `<cache>/runs/<runId>/`, hashes each file (SHA-256) and uploads it in 64 MiB parts. A Read run only reads and measures. One run per drive at a time.
+- **Independent phases.** Reading can be stopped while uploads continue. Uploads can be paused, resumed or stopped without touching the drive.
+- **Resume.** After a restart or reconnect the agent asks the Api for pending uploads, combines the server's completed parts with its local checkpoint file, and sends only what is missing.
+- **Native AOT.** No reflection. Every type sent or received must be listed in `AgentJsonContext` (`Contracts/`), or it fails at run time.
+
+Full description, message tables and sequence diagrams: [docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md), sections 5 to 7. Known issues: [docs/ISSUES-AND-IMPROVEMENTS.md](../docs/ISSUES-AND-IMPROVEMENTS.md) (BUG-03, BUG-04, BUG-05, BUG-11 are in this repository).
 
 ## Requirements
 
@@ -95,26 +122,29 @@ This downloads the latest `mra-linux-x64` from `https://mezzorecovery.com/agent/
 ## Repository layout
 
 ```
-src/
-  MezzoRecovery.Agent/          Agent executable (.NET 10, Native AOT)
-    Api/                        HTTP client for enroll/token endpoints
-    Commands/
-      Enroll/                   mra enroll
-      Run/                      mra run
-      Status/                   mra status
-      Update/                   mra update
-      Version/                  mra version
-    Configuration/              Config loader and path constants
-    Contracts/                  DTOs and JSON source context
-    Extensions/                 DI registration
-    Identity/                   Machine ID, credentials, fingerprint
-    Runtime/                    SignalR connection loop, process lock
-tests/
-  MezzoRecovery.Agent.Tests/
-deploy/
-  install.sh                    Bootstrap installer script
+src/MezzoRecovery.Agent/        Agent executable (.NET 10, Native AOT, assembly name mra)
+  AgentCli.cs, Program.cs       Command line
+  Commands/                     enroll, run, status, version, update, restart
+  Runtime/                      AgentConnectionLoop (hub connection, command handlers, upload resume), ProcessLock
+  Api/                          HTTP clients: enroll, token, pending uploads, upload sessions
+  Devices/                      Discovery, status poller, device state store, report publisher, media loader
+  TapeOperations/               Run runner, file reporter, hasher, upload scheduler, multipart uploader, checkpoints, media control, preflight
+  Contracts/                    Wire DTOs and the JSON source-generation context
+  Configuration/                Config loader and option classes
+  Identity/                     Machine id, credentials, fingerprint
+  Logging/, Extensions/         Console formatter, DI registration
+tests/MezzoRecovery.Agent.Tests/
+deploy/install.sh               Bootstrap installer
 ```
 
+## Build and test
+
+```bash
+dotnet test -p:UseProjectReference=true     # builds against sibling Tape and TapeDrive source
+dotnet publish src/MezzoRecovery.Agent -c Release -r linux-x64 --self-contained true   # Linux only (Native AOT)
+```
+
+Without `-p:UseProjectReference=true` the build uses the pinned `MezzoRecovery.Tape` and `MezzoRecovery.TapeDrive` packages, which can lag the source.
 ## Public artifacts
 
 Built by GitHub Actions and deployed to `https://mezzorecovery.com/agent/`:
@@ -132,10 +162,3 @@ Built by GitHub Actions and deployed to `https://mezzorecovery.com/agent/`:
 - Enrollment codes are one-time use, hashed in the database, and expire after 15 minutes.
 - Agent credentials and machine identity are stored with mode `600`.
 - The process lock at `/run/mezzorecovery-agent.lock` prevents duplicate instances.
-
-## Preview
-
-This note is rendered in the markdown preview. It uses **bold text** and a short list:
-
-- The change is only in `README.md`.
-- The preview shows the formatted note beside the diff.
